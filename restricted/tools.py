@@ -1434,9 +1434,9 @@ class SBCScraper:
 
         total_scraped = 0
         scroll_attempts = 0
-        max_scroll_attempts = 50  # Prevent infinite loops
+        max_scroll_attempts = 800000000  # Prevent infinite loops
         no_new_data_attempts = 0
-        max_no_data_attempts = 3
+        max_no_data_attempts = 800000000
 
         try:
             # Wait for attendees to load
