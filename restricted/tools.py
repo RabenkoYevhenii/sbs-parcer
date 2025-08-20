@@ -1434,6 +1434,7 @@ class SBCScraper:
         max_scroll_attempts = 800000000  # Prevent infinite loops
         no_new_data_attempts = 0
         max_no_data_attempts = 800000000
+        total_processed_attendees = 0  # Track total processed across all scroll attempts
 
         try:
             # Wait for attendees to load
@@ -1502,25 +1503,29 @@ class SBCScraper:
 
                 last_attendee_count = current_attendee_count
 
-                # Process all visible attendees using index-based iteration to handle stale elements
-                attendee_count = 0
-                processed_attendees = 0
+                # Only process newly loaded attendees (from total_processed_attendees onwards)
+                attendee_count = total_processed_attendees  # Start from where we left off
                 batch_scraped = 0
 
-                while processed_attendees < current_attendee_count:
+                logger.info(
+                    f"Processing attendees from index {total_processed_attendees} to {current_attendee_count - 1} ({current_attendee_count - total_processed_attendees} attendees to process)"
+                )
+
+                # Process only the new attendees that were loaded in this scroll
+                while total_processed_attendees < current_attendee_count:
                     try:
                         # Re-find attendee items to avoid stale element issues
                         attendee_items = await self.page.query_selector_all(
                             SBCSelectors.ATTENDEE_ITEM
                         )
 
-                        if processed_attendees >= len(attendee_items):
+                        if total_processed_attendees >= len(attendee_items):
                             logger.info(
                                 "No more attendees to process in current batch"
                             )
                             break
 
-                        item = attendee_items[processed_attendees]
+                        item = attendee_items[total_processed_attendees]
                         attendee_count += 1
 
                         # Get the current page URL for navigation
@@ -1532,13 +1537,13 @@ class SBCScraper:
                                 SBCSelectors.ATTENDEE_NAME
                             )
                             if not name_element:
-                                processed_attendees += 1
+                                total_processed_attendees += 1
                                 continue
                         except Exception as element_error:
                             logger.warning(
                                 f"Stale element encountered: {element_error}"
                             )
-                            processed_attendees += 1
+                            total_processed_attendees += 1
                             continue
 
                         name = await name_element.inner_text()
@@ -1546,7 +1551,7 @@ class SBCScraper:
 
                         if not name or name.lower().strip() in existing_names:
                             logger.info(f"Skipping duplicate attendee: {name}")
-                            processed_attendees += 1
+                            total_processed_attendees += 1
                             continue
 
                         logger.info(
@@ -1827,7 +1832,7 @@ class SBCScraper:
                             )
 
                         # Move to next attendee
-                        processed_attendees += 1
+                        total_processed_attendees += 1
 
                         # Delay between requests to be respectful and human-like
                         delay = settings.delay_between_requests + (
@@ -1839,7 +1844,7 @@ class SBCScraper:
                         logger.error(
                             f"Error processing attendee #{attendee_count}: {str(e)}"
                         )
-                        processed_attendees += 1
+                        total_processed_attendees += 1
                         continue
 
                 logger.info(
