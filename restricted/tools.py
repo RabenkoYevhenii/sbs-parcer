@@ -1344,9 +1344,6 @@ class SBCScraper:
                                 "Main search button clicked successfully"
                             )
                             search_button_found = True
-                            await asyncio.sleep(
-                                5
-                            )  # Wait for search results to load
                             break
                     except Exception as e:
                         logger.debug(
