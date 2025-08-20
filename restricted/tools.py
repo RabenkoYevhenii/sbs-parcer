@@ -991,6 +991,411 @@ class SBCScraper:
             # Return basic attendee data even if extraction fails
             return AttendeeData(full_name=name, source_url=profile_url)
 
+    async def apply_filters(self) -> bool:
+        """Apply filters to attendees list before scraping."""
+        if not self.page:
+            logger.error("Browser page not initialized")
+            return False
+
+        try:
+            logger.info("Applying filters to attendees list...")
+
+            # Wait a bit for the page to fully load
+            await asyncio.sleep(2)
+
+            # Click on the filters button
+            filters_button_selector = "#page-top > app-root > app-event > div > div > div > app-attendees-list > div > app-advanced-search > div > button"
+
+            try:
+                logger.info("Looking for filters button...")
+                filters_button = await self.page.wait_for_selector(
+                    filters_button_selector, timeout=15000
+                )
+                if filters_button:
+                    logger.info("Clicking filters button...")
+                    await filters_button.click()
+                    await asyncio.sleep(3)  # Wait for filters panel to open
+                else:
+                    logger.warning("Filters button not found")
+                    return False
+            except Exception as e:
+                logger.warning(f"Could not click filters button: {e}")
+                return False
+
+            # Wait for gaming verticals filter to be available
+            gaming_verticals_selector = "#gaming-verticals"
+
+            try:
+                logger.info("Looking for gaming verticals filter...")
+                await self.page.wait_for_selector(
+                    gaming_verticals_selector, timeout=15000
+                )
+
+                # Click on gaming verticals to open the dropdown
+                gaming_verticals_element = await self.page.query_selector(
+                    gaming_verticals_selector
+                )
+                if gaming_verticals_element:
+                    logger.info("Clicking gaming verticals filter...")
+                    await gaming_verticals_element.click()
+                    await asyncio.sleep(3)  # Wait for dropdown to open
+                else:
+                    logger.warning("Gaming verticals element not found")
+                    return False
+
+            except Exception as e:
+                logger.warning(
+                    f"Could not access gaming verticals filter: {e}"
+                )
+                return False
+
+            # Now find and select all checkboxes with "Online:" in their labels
+            try:
+                logger.info("Looking for 'Online:' gaming vertical options...")
+
+                # Find all checkboxes within the gaming verticals section
+                checkbox_elements = await self.page.query_selector_all(
+                    "mat-checkbox"
+                )
+                online_options_found = 0
+                online_options_selected = 0
+
+                for checkbox in checkbox_elements:
+                    try:
+                        # Get the label text for this checkbox
+                        label_element = await checkbox.query_selector(
+                            "label.mdc-label"
+                        )
+                        if label_element:
+                            label_text = await label_element.inner_text()
+                            label_text = label_text.strip()
+
+                            # Check if this is an "Online:" option
+                            if label_text.startswith("Online:"):
+                                online_options_found += 1
+                                logger.info(
+                                    f"Found Online option: {label_text}"
+                                )
+
+                                # Find the input element within this checkbox
+                                input_element = await checkbox.query_selector(
+                                    "input[type='checkbox']"
+                                )
+                                if input_element:
+                                    # Check if it's already checked
+                                    is_checked = (
+                                        await input_element.is_checked()
+                                    )
+                                    if not is_checked:
+                                        logger.info(f"Selecting: {label_text}")
+                                        await input_element.click()
+                                        online_options_selected += 1
+                                        await asyncio.sleep(
+                                            0.8
+                                        )  # Small delay between selections
+                                    else:
+                                        logger.info(
+                                            f"Already selected: {label_text}"
+                                        )
+                                        online_options_selected += 1
+                                else:
+                                    logger.warning(
+                                        f"Input element not found for: {label_text}"
+                                    )
+
+                    except Exception as e:
+                        logger.warning(f"Error processing checkbox: {e}")
+                        continue
+
+                logger.info(
+                    f"Found {online_options_found} Online gaming vertical options"
+                )
+                logger.info(
+                    f"Selected {online_options_selected} Online gaming vertical options"
+                )
+
+                if online_options_found == 0:
+                    logger.warning("No Online gaming vertical options found")
+                    return False
+
+            except Exception as e:
+                logger.error(f"Error selecting Online gaming verticals: {e}")
+                return False
+
+            # Wait a moment for selections to register
+            await asyncio.sleep(2)
+
+            # Apply the gaming verticals filter by clicking its apply button
+            try:
+                logger.info("Looking for gaming verticals apply button...")
+                gaming_apply_button_selectors = [
+                    "button:has-text('Apply')",
+                    "button[type='submit']",
+                    ".apply-filters",
+                    ".search-button",
+                    "button.mat-raised-button",
+                    "button.mat-button",
+                ]
+
+                gaming_button_found = False
+                for selector in gaming_apply_button_selectors:
+                    try:
+                        gaming_apply_button = (
+                            await self.page.wait_for_selector(
+                                selector, timeout=5000
+                            )
+                        )
+                        if gaming_apply_button:
+                            logger.info(
+                                f"Clicking gaming verticals apply button with selector: {selector}"
+                            )
+                            await gaming_apply_button.click()
+                            gaming_button_found = True
+                            await asyncio.sleep(3)  # Wait for application
+                            break
+                    except:
+                        continue
+
+                if not gaming_button_found:
+                    logger.warning(
+                        "Gaming verticals apply button not found, proceeding anyway"
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"Could not click gaming verticals apply button: {e}"
+                )
+
+            # Now apply the second filter: Organization Types
+            try:
+                logger.info("Applying organization type filter...")
+
+                # Wait for organization type filter elements to be available after gaming verticals selection
+                await asyncio.sleep(3)
+
+                # Click on organization type filter to open it
+                organization_type_selector = "#organization-type"
+                try:
+                    logger.info("Looking for organization type filter...")
+                    await self.page.wait_for_selector(
+                        organization_type_selector, timeout=15000
+                    )
+
+                    organization_type_element = await self.page.query_selector(
+                        organization_type_selector
+                    )
+                    if organization_type_element:
+                        logger.info("Clicking organization type filter...")
+                        await organization_type_element.click()
+                        await asyncio.sleep(3)  # Wait for dropdown to open
+                    else:
+                        logger.warning("Organization type element not found")
+                        # Continue anyway, maybe it's already open
+
+                except Exception as e:
+                    logger.warning(
+                        f"Could not click organization type filter: {e}"
+                    )
+
+                # Find all checkboxes in the organization type filter (they appear in overlay)
+                organization_checkbox_elements = (
+                    await self.page.query_selector_all("mat-checkbox")
+                )
+                organization_options_found = 0
+                organization_options_selected = 0
+
+                # Define the organization types we want to select
+                target_organization_types = [
+                    "Operator - Casino/Bookmaker/Sportsbook",
+                    "Supplier/Service Provider",
+                    "Affiliate",
+                    "Sports Organisation",
+                ]
+
+                logger.info(
+                    f"Looking for organization type options: {target_organization_types}"
+                )
+
+                for checkbox in organization_checkbox_elements:
+                    try:
+                        # Get the label text for this checkbox
+                        label_element = await checkbox.query_selector(
+                            "label.mdc-label"
+                        )
+                        if label_element:
+                            label_text = await label_element.inner_text()
+                            label_text = label_text.strip()
+
+                            # Check if this is one of our target organization types
+                            if label_text in target_organization_types:
+                                organization_options_found += 1
+                                logger.info(
+                                    f"Found target organization type: {label_text}"
+                                )
+
+                                # Find the input element within this checkbox
+                                input_element = await checkbox.query_selector(
+                                    "input[type='checkbox']"
+                                )
+                                if input_element:
+                                    # Check if it's already checked
+                                    is_checked = (
+                                        await input_element.is_checked()
+                                    )
+                                    if not is_checked:
+                                        logger.info(
+                                            f"Selecting organization type: {label_text}"
+                                        )
+                                        await input_element.click()
+                                        organization_options_selected += 1
+                                        await asyncio.sleep(
+                                            0.8
+                                        )  # Small delay between selections
+                                    else:
+                                        logger.info(
+                                            f"Already selected organization type: {label_text}"
+                                        )
+                                        organization_options_selected += 1
+                                else:
+                                    logger.warning(
+                                        f"Input element not found for organization type: {label_text}"
+                                    )
+
+                    except Exception as e:
+                        logger.warning(
+                            f"Error processing organization checkbox: {e}"
+                        )
+                        continue
+
+                logger.info(
+                    f"Found {organization_options_found} target organization type options"
+                )
+                logger.info(
+                    f"Selected {organization_options_selected} target organization type options"
+                )
+
+                if organization_options_found > 0:
+                    # Wait a moment and then click the organization type apply button
+                    await asyncio.sleep(2)
+
+                    try:
+                        logger.info(
+                            "Looking for organization type apply button..."
+                        )
+                        selectors = [
+                            "button:has-text('Apply')",
+                            "button[type='submit']",
+                            ".apply-filters",
+                            ".search-button",
+                            "button.multi-select-actions-apply",
+                            "button.mat-raised-button",
+                            "button.mat-button",
+                        ]
+                        for selector in selectors:
+                            btn = await self.page.query_selector(selector)
+                            if btn:
+                                logger.info(
+                                    f"Clicking organization type apply button: {selector}"
+                                )
+                                await btn.click()
+                                await asyncio.sleep(3)
+                                break
+                        else:
+                            logger.warning(
+                                "Organization type apply button not found, proceeding anyway"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not click organization type apply button: {e}"
+                        )
+                else:
+                    logger.warning("No target organization type options found")
+            except Exception as e:
+                logger.error(f"Error applying organization type filter: {e}")
+
+            # Wait a moment for all selections to register
+            await asyncio.sleep(3)
+
+            # Apply the final search with the specific search button
+            try:
+                logger.info("Looking for main search button...")
+
+                # Try the specific class selectors first
+                search_button_selectors = [
+                    "button.action-btn.search",
+                    ".action-btn.search",
+                    "button:has-text('Search')",
+                    "button[type='submit']",
+                    ".search-button",
+                ]
+
+                search_button_found = False
+                for search_selector in search_button_selectors:
+                    try:
+                        search_button = await self.page.wait_for_selector(
+                            search_selector, timeout=5000
+                        )
+                        if search_button:
+                            logger.info(
+                                f"Clicking main search button with selector: {search_selector}"
+                            )
+                            await search_button.click()
+                            logger.info(
+                                "Main search button clicked successfully"
+                            )
+                            search_button_found = True
+                            await asyncio.sleep(
+                                5
+                            )  # Wait for search results to load
+                            break
+                    except Exception as e:
+                        logger.debug(
+                            f"Search selector {search_selector} failed: {e}"
+                        )
+                        continue
+
+                if not search_button_found:
+                    logger.warning("No search button found with any selector")
+
+                # Wait for results to update
+                await self.page.wait_for_load_state("networkidle")
+
+            except Exception as e:
+                logger.warning(f"Could not click search button: {e}")
+
+            # Close the filter panel if it's still open (optional)
+            try:
+                # Look for a close button or click outside the filter area
+                close_selectors = [
+                    "button:has-text('✕')",
+                    "button:has-text('Close')",
+                    ".close-button",
+                    "[aria-label='Close']",
+                ]
+
+                for selector in close_selectors:
+                    try:
+                        close_button = await self.page.wait_for_selector(
+                            selector, timeout=2000
+                        )
+                        if close_button:
+                            await close_button.click()
+                            logger.info("Closed filter panel")
+                            break
+                    except:
+                        continue
+
+            except Exception as e:
+                logger.debug(f"Could not close filter panel: {e}")
+
+            await asyncio.sleep(2)
+            logger.info("Filters applied successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error applying filters: {e}")
+            return False
+
     async def scroll_and_scrape_attendees(
         self, page_url: str, csv_filepath: str
     ) -> int:
@@ -1004,6 +1409,18 @@ class SBCScraper:
         # Navigate to the page first
         await self.page.goto(page_url)
         await self.page.wait_for_load_state("networkidle")
+
+        # Apply filters before starting to scrape
+        logger.info("Applying filters to narrow down attendees...")
+        filter_success = await self.apply_filters()
+        if not filter_success:
+            logger.warning(
+                "Failed to apply filters, proceeding with unfiltered results"
+            )
+        else:
+            logger.info(
+                "Filters applied successfully, proceeding with filtered results"
+            )
 
         # Ensure CSV file exists with proper headers
         fieldnames = get_attendee_csv_fieldnames()
@@ -1034,12 +1451,18 @@ class SBCScraper:
             # Wait for scroll container to be available
             scroll_container = None
             try:
-                await self.page.wait_for_selector(".ng-scroll-layer", timeout=10000)
-                scroll_container = await self.page.query_selector(".ng-scroll-layer")
+                await self.page.wait_for_selector(
+                    ".ng-scroll-layer", timeout=10000
+                )
+                scroll_container = await self.page.query_selector(
+                    ".ng-scroll-layer"
+                )
                 if scroll_container:
                     logger.info("Found ng-scroll-layer container")
                 else:
-                    logger.warning("ng-scroll-layer container not found, will use fallback scrolling")
+                    logger.warning(
+                        "ng-scroll-layer container not found, will use fallback scrolling"
+                    )
             except Exception as e:
                 logger.warning(f"Error finding scroll container: {e}")
 
@@ -1055,20 +1478,30 @@ class SBCScraper:
                 )
                 current_attendee_count = len(attendee_items)
 
-                logger.info(f"Found {current_attendee_count} attendees on page (attempt {scroll_attempts})")
+                logger.info(
+                    f"Found {current_attendee_count} attendees on page (attempt {scroll_attempts})"
+                )
 
                 # Check if we got new attendees since last scroll
                 if scroll_attempts > 1:
                     if current_attendee_count <= last_attendee_count:
                         no_new_data_attempts += 1
-                        logger.info(f"No new attendees loaded (attempt {no_new_data_attempts}/{max_no_data_attempts})")
-                        
+                        logger.info(
+                            f"No new attendees loaded (attempt {no_new_data_attempts}/{max_no_data_attempts})"
+                        )
+
                         if no_new_data_attempts >= max_no_data_attempts:
-                            logger.info("No new attendees after multiple scroll attempts, ending")
+                            logger.info(
+                                "No new attendees after multiple scroll attempts, ending"
+                            )
                             break
                     else:
-                        no_new_data_attempts = 0  # Reset counter when new attendees are found
-                        logger.info(f"Found {current_attendee_count - last_attendee_count} new attendees")
+                        no_new_data_attempts = (
+                            0  # Reset counter when new attendees are found
+                        )
+                        logger.info(
+                            f"Found {current_attendee_count - last_attendee_count} new attendees"
+                        )
 
                 last_attendee_count = current_attendee_count
 
@@ -1085,7 +1518,9 @@ class SBCScraper:
                         )
 
                         if processed_attendees >= len(attendee_items):
-                            logger.info("No more attendees to process in current batch")
+                            logger.info(
+                                "No more attendees to process in current batch"
+                            )
                             break
 
                         item = attendee_items[processed_attendees]
@@ -1144,7 +1579,9 @@ class SBCScraper:
 
                             # Extract company
                             company = ""
-                            company_elem = await item.query_selector(".company")
+                            company_elem = await item.query_selector(
+                                ".company"
+                            )
                             if company_elem:
                                 company = clean_text(
                                     await company_elem.inner_text()
@@ -1326,14 +1763,33 @@ class SBCScraper:
 
                                     # Navigate back to the attendees list
                                     try:
-                                        await self.page.goto(current_page_url)
-                                        await self.page.wait_for_load_state(
-                                            "networkidle"
+                                        back_button = (
+                                            await self.page.wait_for_selector(
+                                                ".back-btn.ng-star-inserted",
+                                                timeout=5000,
+                                            )
                                         )
-                                        await asyncio.sleep(1)
-                                        logger.info(
-                                            f"⬅️ Navigated back to attendees list"
-                                        )
+                                        if back_button:
+                                            await back_button.click()
+                                            await self.page.wait_for_load_state(
+                                                "networkidle"
+                                            )
+                                            await asyncio.sleep(1)
+                                            logger.info(
+                                                f"⬅️ Navigated back to attendees list using back button"
+                                            )
+                                        else:
+                                            # Fallback to goto if back button not found
+                                            await self.page.goto(
+                                                current_page_url
+                                            )
+                                            await self.page.wait_for_load_state(
+                                                "networkidle"
+                                            )
+                                            await asyncio.sleep(1)
+                                            logger.info(
+                                                f"⬅️ Navigated back to attendees list using goto (fallback)"
+                                            )
 
                                     except Exception as nav_error:
                                         logger.warning(
@@ -1389,14 +1845,17 @@ class SBCScraper:
                         processed_attendees += 1
                         continue
 
-                logger.info(f"Batch {scroll_attempts} completed: {batch_scraped} new attendees scraped")
+                logger.info(
+                    f"Batch {scroll_attempts} completed: {batch_scraped} new attendees scraped"
+                )
 
                 # Perform scrolling in the ng-scroll-layer container to load more content
                 logger.info("🔄 Scrolling to load more attendees...")
 
                 try:
                     # Enhanced scrolling logic with multiple container detection
-                    scroll_result = await self.page.evaluate("""
+                    scroll_result = await self.page.evaluate(
+                        """
                         (function() {
                             // Try multiple container selectors in order of preference
                             const containerSelectors = [
@@ -1494,19 +1953,24 @@ class SBCScraper:
                                 info: scrollInfo
                             };
                         })();
-                    """)
-                    
-                    if scroll_result['success']:
-                        container = scroll_result['container']
-                        info = scroll_result['info']
+                    """
+                    )
+
+                    if scroll_result["success"]:
+                        container = scroll_result["container"]
+                        info = scroll_result["info"]
                         logger.info(f"✅ Successfully scrolled in {container}")
-                        logger.info(f"   Scroll: {info['beforeScrollTop']} → {info['afterScrollTop']} (+{info['afterScrollTop'] - info['beforeScrollTop']}px)")
+                        logger.info(
+                            f"   Scroll: {info['beforeScrollTop']} → {info['afterScrollTop']} (+{info['afterScrollTop'] - info['beforeScrollTop']}px)"
+                        )
                     else:
-                        logger.warning("⚠️ No scrollable container found or scroll failed")
+                        logger.warning(
+                            "⚠️ No scrollable container found or scroll failed"
+                        )
                         # Force scroll attempt on the page
-                        await self.page.keyboard.press('PageDown')
+                        await self.page.keyboard.press("PageDown")
                         await asyncio.sleep(0.5)
-                        await self.page.keyboard.press('PageDown')
+                        await self.page.keyboard.press("PageDown")
                         logger.info("📄 Attempted PageDown as fallback")
 
                 except Exception as scroll_error:
@@ -1531,7 +1995,9 @@ class SBCScraper:
                             await self.page.wait_for_selector(
                                 selector, state="hidden", timeout=5000
                             )
-                            logger.info(f"Loading indicator {selector} disappeared")
+                            logger.info(
+                                f"Loading indicator {selector} disappeared"
+                            )
                         except Exception:
                             continue
 
@@ -1544,7 +2010,9 @@ class SBCScraper:
         except Exception as e:
             logger.error(f"Error in scrolling scrape: {str(e)}")
 
-        logger.info(f"Scrolling scrape completed after {scroll_attempts} attempts")
+        logger.info(
+            f"Scrolling scrape completed after {scroll_attempts} attempts"
+        )
         logger.info(f"Total new attendees scraped: {total_scraped}")
         return total_scraped
 
@@ -1567,11 +2035,11 @@ class SBCScraper:
 async def scrape_attendees(page_url: str, csv_filepath: str) -> int:
     """
     Main function to scrape attendees from SBC website with scrolling support.
-    
+
     Args:
         page_url: URL of the SBC attendees page
         csv_filepath: Path to save the CSV file
-        
+
     Returns:
         int: Number of new attendees scraped
     """

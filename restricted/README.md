@@ -5,7 +5,6 @@ A sophisticated web scraper for the SBC (Sports Betting Community) events websit
 ## Features
 
 - 🔐 **Login-protected scraping** - Handles authentication automatically
-- 🎯 **Multiple page types** - Attendees, companies, and exhibitors (extensible)
 - 🔄 **Duplicate detection** - Automatically skips already scraped records
 - � **Infinite scroll support** - Handles scroll-based pagination automatically
 - 🎭 **Browser automation** - Uses Playwright for reliable scraping
@@ -58,13 +57,9 @@ SBC_PASSWORD=your_password_here
 # Website URLs
 SBC_LOGIN_URL=https://sbcevents.com/login
 SBC_ATTENDEES_URL=https://sbcevents.com/attendees
-SBC_COMPANIES_URL=https://sbcevents.com/companies
-SBC_EXHIBITORS_URL=https://sbcevents.com/exhibitors
 
 # Output files
 ATTENDEES_CSV_PATH=attendees.csv
-COMPANIES_CSV_PATH=companies.csv
-EXHIBITORS_CSV_PATH=exhibitors.csv
 
 # Browser settings
 HEADLESS=True

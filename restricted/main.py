@@ -198,7 +198,7 @@ Examples:
     parser.add_argument(
         "--page",
         type=str,
-        help="Page to scrape (attendees, companies, exhibitors)",
+        help="Page to scrape (attendees)",
     )
 
     parser.add_argument(

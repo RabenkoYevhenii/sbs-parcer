@@ -103,9 +103,7 @@ class SBCSelectors:
         ".details-item:has(h5:contains('Introduction')) .field-value, "
         ".introduction, .bio, .about, .description"
     )
-    PROFILE_IMAGE = (
-        "#page-top > app-root > app-event > div > div > div > app-autofetch-person-profile > div > app-person-profile > div > div.profile-main-row.d-lg-flex.align-items-end.justify-content-between > div.profile-main-info > div.avatar-wrapper > app-circle-avatar > div > div > div > img"
-    )
+    PROFILE_IMAGE = "#page-top > app-root > app-event > div > div > div > app-autofetch-person-profile > div > app-person-profile > div > div.profile-main-row.d-lg-flex.align-items-end.justify-content-between > div.profile-main-info > div.avatar-wrapper > app-circle-avatar > div > div > div > img"
 
     # Social media container - dynamically loaded by JS
     SOCIAL_MEDIA_CONTAINER = "#page-top > app-root > app-event > div > div > div > app-autofetch-person-profile > div > app-person-profile > div > div.profile-detail-row > div:nth-child(1) > div.d-flex.justify-content-center.justify-content-lg-start > div"
