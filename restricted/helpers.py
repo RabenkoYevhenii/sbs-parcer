@@ -143,6 +143,42 @@ class CSVManager:
         return existing_names
 
     @staticmethod
+    def read_existing_name_company_pairs(filepath: str) -> set:
+        """Read existing name-company pairs from CSV file for advanced duplicate checking."""
+        existing_pairs = set()
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    if "full_name" in row and row["full_name"]:
+                        full_name = row["full_name"].strip().lower()
+                        company_name = ""
+                        if "company_name" in row and row["company_name"]:
+                            company_name = row["company_name"].strip().lower()
+                        
+                        # Create a tuple pair for duplicate checking
+                        pair = (full_name, company_name)
+                        existing_pairs.add(pair)
+        return existing_pairs
+
+    @staticmethod
+    def is_duplicate_attendee(full_name: str, company_name: str, existing_pairs: set) -> bool:
+        """Check if attendee is a duplicate based on name-company pair."""
+        if not full_name:
+            return False
+        
+        # Normalize the input data
+        normalized_name = full_name.strip().lower()
+        normalized_company = ""
+        if company_name:
+            normalized_company = company_name.strip().lower()
+        
+        # Create the pair to check
+        check_pair = (normalized_name, normalized_company)
+        
+        return check_pair in existing_pairs
+
+    @staticmethod
     def append_to_csv(filepath: str, data: Dict[str, str]) -> None:
         """Append data to CSV file."""
         fieldnames = list(data.keys())

@@ -1423,11 +1423,11 @@ class SBCScraper:
         fieldnames = get_attendee_csv_fieldnames()
         self.csv_manager.create_csv_if_not_exists(csv_filepath, fieldnames)
 
-        # Read existing names to avoid duplicates
-        existing_names = self.csv_manager.read_existing_names(
-            csv_filepath, "full_name"
+        # Read existing name-company pairs to avoid duplicates
+        existing_pairs = self.csv_manager.read_existing_name_company_pairs(
+            csv_filepath
         )
-        logger.info(f"Found {len(existing_names)} existing attendees in CSV")
+        logger.info(f"Found {len(existing_pairs)} existing attendee name-company pairs in CSV")
 
         total_scraped = 0
         scroll_attempts = 0
@@ -1549,8 +1549,22 @@ class SBCScraper:
                         name = await name_element.inner_text()
                         name = clean_text(name)
 
-                        if not name or name.lower().strip() in existing_names:
-                            logger.info(f"Skipping duplicate attendee: {name}")
+                        # Extract company for duplicate checking
+                        company_for_duplicate_check = ""
+                        try:
+                            company_elem = await item.query_selector(".company")
+                            if company_elem:
+                                company_for_duplicate_check = clean_text(
+                                    await company_elem.inner_text()
+                                )
+                        except Exception:
+                            pass
+
+                        # Check for duplicates using name-company pair
+                        if not name or self.csv_manager.is_duplicate_attendee(
+                            name, company_for_duplicate_check, existing_pairs
+                        ):
+                            logger.info(f"Skipping duplicate attendee: {name} at {company_for_duplicate_check}")
                             total_processed_attendees += 1
                             continue
 
@@ -1817,9 +1831,14 @@ class SBCScraper:
                                 )
                                 total_scraped += 1
                                 batch_scraped += 1
-                                existing_names.add(name.lower().strip())
+                                # Add to existing pairs to track duplicates
+                                attendee_pair = (
+                                    attendee_data.full_name.lower().strip(),
+                                    attendee_data.company_name.lower().strip() if attendee_data.company_name else ""
+                                )
+                                existing_pairs.add(attendee_pair)
                                 logger.info(
-                                    f"✅ Successfully saved attendee: {name} (Total: {total_scraped})"
+                                    f"✅ Successfully saved attendee: {attendee_data.full_name} (Total: {total_scraped})"
                                 )
                             except Exception as save_error:
                                 logger.error(

@@ -176,13 +176,24 @@ PROFILE_NAME = "h1, .profile-name, .attendee-name, .full-name"
 
 ## Duplicate Detection
 
-The scraper implements intelligent duplicate detection:
+The scraper implements intelligent **enhanced duplicate detection** using name-company pairs:
 
-1. **Name-based matching** - Compares full names (case-insensitive)
-2. **CSV integration** - Reads existing records before scraping
-3. **Skip mechanism** - Avoids re-scraping existing profiles
-4. **Incremental updates** - Only adds new records
-5. **Real-time tracking** - Updates existing names list during scroll sessions
+1. **Enhanced matching** - Compares full name AND company name pairs (case-insensitive)
+2. **Improved accuracy** - Allows same person at different companies while preventing true duplicates
+3. **CSV integration** - Reads existing name-company pairs before scraping
+4. **Skip mechanism** - Avoids re-scraping existing profiles based on the combination
+5. **Incremental updates** - Only adds new unique name-company combinations
+6. **Real-time tracking** - Updates existing pairs list during scroll sessions
+
+### Benefits of Enhanced Duplicate Checking:
+- **More precise**: Same person at different companies won't be skipped
+- **Better data quality**: Prevents false positives from name-only matching
+- **Business intelligence**: Captures career moves and multi-company affiliations
+- **Case-insensitive**: Handles name/company variations gracefully
+
+### Example:
+- ✅ "John Smith" at "Company A" and "John Smith" at "Company B" = **2 separate records**
+- ❌ "John Smith" at "Company A" and "John Smith" at "Company A" = **1 record (duplicate)**
 
 The SBC website uses infinite scroll instead of traditional pagination. The scraper handles this automatically by:
 
