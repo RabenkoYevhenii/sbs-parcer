@@ -1431,10 +1431,10 @@ class SBCScraper:
 
         total_scraped = 0
         scroll_attempts = 0
-        max_scroll_attempts = 800000000  # Prevent infinite loops
+        max_scroll_attempts = 8000000  # Reduced from 800000000 to prevent infinite loops
         no_new_data_attempts = 0
-        max_no_data_attempts = 800000000
-        total_processed_attendees = 0  # Track total processed across all scroll attempts
+        max_no_data_attempts = 10  # Reduced from 800000000 to be more reasonable
+        processed_attendee_ids = set()  # Track processed attendees by unique identifier
 
         try:
             # Wait for attendees to load
@@ -1448,27 +1448,32 @@ class SBCScraper:
 
             # Wait for scroll container to be available
             scroll_container = None
-            try:
-                await self.page.wait_for_selector(
-                    ".ng-scroll-layer", timeout=10000
-                )
-                scroll_container = await self.page.query_selector(
-                    ".ng-scroll-layer"
-                )
-                if scroll_container:
-                    logger.info("Found ng-scroll-layer container")
-                else:
-                    logger.warning(
-                        "ng-scroll-layer container not found, will use fallback scrolling"
-                    )
-            except Exception as e:
-                logger.warning(f"Error finding scroll container: {e}")
-
             last_attendee_count = 0
+            consecutive_failed_scrolls = 0
+            max_failed_scrolls = 5
 
             while scroll_attempts < max_scroll_attempts:
                 scroll_attempts += 1
                 logger.info(f"Scroll attempt {scroll_attempts}")
+
+                # Re-find scroll container if needed
+                if not scroll_container or consecutive_failed_scrolls >= 3:
+                    try:
+                        await self.page.wait_for_selector(
+                            ".ng-scroll-layer", timeout=5000
+                        )
+                        scroll_container = await self.page.query_selector(
+                            ".ng-scroll-layer"
+                        )
+                        if scroll_container:
+                            logger.info("Found/Re-found ng-scroll-layer container")
+                            consecutive_failed_scrolls = 0
+                        else:
+                            logger.warning(
+                                "ng-scroll-layer container not found, will use fallback scrolling"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Error finding scroll container: {e}")
 
                 # Get all currently visible attendee elements
                 attendee_items = await self.page.query_selector_all(
@@ -1494,97 +1499,78 @@ class SBCScraper:
                             )
                             break
                     else:
-                        no_new_data_attempts = (
-                            0  # Reset counter when new attendees are found
-                        )
+                        no_new_data_attempts = 0
                         logger.info(
                             f"Found {current_attendee_count - last_attendee_count} new attendees"
                         )
 
                 last_attendee_count = current_attendee_count
 
-                # Only process newly loaded attendees (from total_processed_attendees onwards)
-                attendee_count = total_processed_attendees  # Start from where we left off
+                # Process all attendees, but skip those we've already processed
                 batch_scraped = 0
+                attendees_to_process = []
 
-                logger.info(
-                    f"Processing attendees from index {total_processed_attendees} to {current_attendee_count - 1} ({current_attendee_count - total_processed_attendees} attendees to process)"
-                )
-
-                # Process only the new attendees that were loaded in this scroll
-                while total_processed_attendees < current_attendee_count:
+                # Build list of attendees that haven't been processed yet
+                for i, item in enumerate(attendee_items):
                     try:
-                        # Re-find attendee items to avoid stale element issues
-                        attendee_items = await self.page.query_selector_all(
-                            SBCSelectors.ATTENDEE_ITEM
+                        # Create a unique identifier for each attendee
+                        name_element = await item.query_selector(
+                            SBCSelectors.ATTENDEE_NAME
                         )
-
-                        if total_processed_attendees >= len(attendee_items):
-                            logger.info(
-                                "No more attendees to process in current batch"
-                            )
-                            break
-
-                        item = attendee_items[total_processed_attendees]
-                        attendee_count += 1
-
-                        # Get the current page URL for navigation
-                        current_page_url = self.page.url
-
-                        # Get attendee name for duplicate checking
-                        try:
-                            name_element = await item.query_selector(
-                                SBCSelectors.ATTENDEE_NAME
-                            )
-                            if not name_element:
-                                total_processed_attendees += 1
-                                continue
-                        except Exception as element_error:
-                            logger.warning(
-                                f"Stale element encountered: {element_error}"
-                            )
-                            total_processed_attendees += 1
+                        if not name_element:
                             continue
 
-                        name = await name_element.inner_text()
-                        name = clean_text(name)
+                        name = clean_text(await name_element.inner_text())
+                        if not name:
+                            continue
 
-                        # Extract company for duplicate checking
-                        company_for_duplicate_check = ""
+                        # Extract company for unique identification
+                        company_for_id = ""
                         try:
                             company_elem = await item.query_selector(".company")
                             if company_elem:
-                                company_for_duplicate_check = clean_text(
+                                company_for_id = clean_text(
                                     await company_elem.inner_text()
                                 )
                         except Exception:
                             pass
 
-                        # Check for duplicates using name-company pair
-                        if not name or self.csv_manager.is_duplicate_attendee(
-                            name, company_for_duplicate_check, existing_pairs
-                        ):
-                            logger.info(f"Skipping duplicate attendee: {name} at {company_for_duplicate_check}")
-                            total_processed_attendees += 1
-                            continue
+                        # Create unique identifier
+                        unique_id = f"{name}|{company_for_id}|{i}"
+                        
+                        # Check if we've already processed this attendee
+                        if unique_id not in processed_attendee_ids:
+                            # Also check CSV duplicates
+                            if not self.csv_manager.is_duplicate_attendee(
+                                name, company_for_id, existing_pairs
+                            ):
+                                attendees_to_process.append((i, item, unique_id, name, company_for_id))
+                            else:
+                                logger.info(f"Skipping duplicate attendee: {name} at {company_for_id}")
+                                processed_attendee_ids.add(unique_id)
 
+                    except Exception as e:
+                        logger.warning(f"Error creating attendee identifier: {e}")
+                        continue
+
+                logger.info(
+                    f"Processing {len(attendees_to_process)} new attendees in this batch"
+                )
+
+                # Process the new attendees
+                for i, item, unique_id, name, company_for_id in attendees_to_process:
+                    try:
                         logger.info(
                             f"Processing new attendee ({total_scraped + 1}): {name}"
                         )
+
+                        # Get the current page URL for navigation
+                        current_page_url = self.page.url
 
                         # Extract data directly from the attendee card
                         attendee_data = None
 
                         try:
-                            # Extract name
-                            name_elem = await item.query_selector(".name")
-                            if name_elem:
-                                extracted_name = clean_text(
-                                    await name_elem.inner_text()
-                                )
-                                if extracted_name:
-                                    name = extracted_name
-
                             # Extract position/title
                             position = ""
                             title_elem = await item.query_selector(".title")
@@ -1593,22 +1579,12 @@ class SBCScraper:
                                     await title_elem.inner_text()
                                 )
 
-                            # Extract company
-                            company = ""
-                            company_elem = await item.query_selector(
-                                ".company"
-                            )
-                            if company_elem:
-                                company = clean_text(
-                                    await company_elem.inner_text()
-                                )
-
                             # Create basic attendee data from card information
                             attendee_data = AttendeeData(
                                 full_name=name,
-                                company_name=company,
+                                company_name=company_for_id,
                                 position=position,
-                                source_url=current_page_url,  # Will be updated with profile URL
+                                source_url=current_page_url,
                             )
 
                             logger.info(
@@ -1625,7 +1601,7 @@ class SBCScraper:
                                 source_url=current_page_url,
                             )
 
-                        # Now try to enhance the data by clicking on the profile to get detailed information
+                        # Now try to enhance the data by clicking on the profile
                         if attendee_data:
                             try:
                                 logger.info(
@@ -1641,7 +1617,6 @@ class SBCScraper:
                                     ".name"
                                 )
                                 if not clickable_element:
-                                    # Try clicking on the entire attendee card
                                     clickable_element = item
 
                                 try:
@@ -1649,11 +1624,9 @@ class SBCScraper:
                                         f"🖱️ Clicking on profile for: {name}"
                                     )
                                     await clickable_element.click()
-
-                                    # Wait a moment for potential navigation
                                     await asyncio.sleep(1)
 
-                                    # Check if page URL changed (indicating successful navigation)
+                                    # Check if page URL changed
                                     current_url = self.page.url
                                     if current_url != initial_url:
                                         logger.info(
@@ -1676,26 +1649,6 @@ class SBCScraper:
                                                 f"✅ Navigation successful on second try for: {name}"
                                             )
                                             navigation_successful = True
-                                        else:
-                                            logger.warning(
-                                                f"🔄 Still no navigation, refreshing page for: {name}"
-                                            )
-                                            await self.page.reload(
-                                                wait_until="networkidle"
-                                            )
-                                            await asyncio.sleep(2)
-
-                                            # Wait for attendees to load after page refresh
-                                            await self.page.wait_for_selector(
-                                                SBCSelectors.ATTENDEE_ITEM,
-                                                timeout=10000,
-                                            )
-
-                                            # Update initial URL after refresh
-                                            initial_url = self.page.url
-                                            logger.info(
-                                                f"✅ Page refreshed, updated initial URL: {initial_url}"
-                                            )
 
                                 except Exception as e:
                                     logger.error(
@@ -1720,7 +1673,7 @@ class SBCScraper:
                                     )
 
                                     if enhanced_data:
-                                        # Merge card data with profile data, keeping profile data priority for most fields
+                                        # Merge card data with profile data
                                         attendee_data.source_url = profile_url
                                         attendee_data.full_name = (
                                             enhanced_data.full_name
@@ -1771,7 +1724,6 @@ class SBCScraper:
                                             f"✅ Enhanced data from profile for: {name}"
                                         )
                                     else:
-                                        # Keep the profile URL even if extraction failed
                                         attendee_data.source_url = profile_url
                                         logger.warning(
                                             f"⚠️ Failed to extract enhanced data from profile for: {name}"
@@ -1824,19 +1776,23 @@ class SBCScraper:
 
                         # Save attendee data if we have it
                         if attendee_data:
-                            # Save to CSV immediately after extraction
                             try:
                                 self.csv_manager.append_to_csv(
                                     csv_filepath, attendee_data.to_dict()
                                 )
                                 total_scraped += 1
                                 batch_scraped += 1
+                                
+                                # Mark this attendee as processed
+                                processed_attendee_ids.add(unique_id)
+                                
                                 # Add to existing pairs to track duplicates
                                 attendee_pair = (
                                     attendee_data.full_name.lower().strip(),
                                     attendee_data.company_name.lower().strip() if attendee_data.company_name else ""
                                 )
                                 existing_pairs.add(attendee_pair)
+                                
                                 logger.info(
                                     f"✅ Successfully saved attendee: {attendee_data.full_name} (Total: {total_scraped})"
                                 )
@@ -1844,41 +1800,41 @@ class SBCScraper:
                                 logger.error(
                                     f"❌ Error saving attendee {name} to CSV: {save_error}"
                                 )
-                                # Continue processing even if save fails
                         else:
                             logger.warning(
                                 f"⚠️ Failed to extract data for attendee: {name}"
                             )
 
-                        # Move to next attendee
-                        total_processed_attendees += 1
-
-                        # Delay between requests to be respectful and human-like
+                        # Delay between requests
                         delay = settings.delay_between_requests + (
-                            (attendee_count % 3) * 0.5
+                            (i % 3) * 0.5
                         )
                         await asyncio.sleep(delay)
 
                     except Exception as e:
                         logger.error(
-                            f"Error processing attendee #{attendee_count}: {str(e)}"
+                            f"Error processing attendee {name}: {str(e)}"
                         )
-                        total_processed_attendees += 1
+                        # Still mark as processed to avoid retrying
+                        processed_attendee_ids.add(unique_id)
                         continue
 
                 logger.info(
                     f"Batch {scroll_attempts} completed: {batch_scraped} new attendees scraped"
                 )
 
-                # Perform scrolling in the ng-scroll-layer container to load more content
+                # If we didn't process any new attendees and no new ones were loaded, consider ending
+                if batch_scraped == 0 and no_new_data_attempts > 0:
+                    logger.info("No new attendees processed and none loaded, considering ending...")
+
+                # Perform scrolling to load more content
                 logger.info("🔄 Scrolling to load more attendees...")
 
                 try:
-                    # Enhanced scrolling logic with multiple container detection
+                    # Enhanced scrolling logic with container re-detection
                     scroll_result = await self.page.evaluate(
                         """
                         (function() {
-                            // Try multiple container selectors in order of preference
                             const containerSelectors = [
                                 '.ng-scroll-layer',
                                 '.attendees-wrapper',
@@ -1892,27 +1848,22 @@ class SBCScraper:
                             let scrolledContainer = null;
                             let scrollInfo = {};
                             
-                            // First, try to find a scrollable container
+                            // Try to find a scrollable container
                             for (const selector of containerSelectors) {
                                 const containers = document.querySelectorAll(selector);
                                 for (const container of containers) {
                                     if (container && container.scrollHeight > container.clientHeight) {
                                         const beforeScrollTop = container.scrollTop;
                                         const clientHeight = container.clientHeight;
-                                        const scrollDistance = Math.max(clientHeight * 1.5, 800); // At least 800px
+                                        const scrollDistance = Math.max(clientHeight * 1.5, 1000);
                                         
-                                        // Focus the container
                                         container.focus();
-                                        
-                                        // Method 1: Direct scrollTop change
                                         container.scrollTop += scrollDistance;
                                         
-                                        // Method 2: scrollBy if available
                                         if (container.scrollBy) {
                                             container.scrollBy(0, scrollDistance);
                                         }
                                         
-                                        // Method 3: Dispatch wheel events
                                         const wheelEvent = new WheelEvent('wheel', {
                                             deltaY: scrollDistance,
                                             deltaMode: 0,
@@ -1921,7 +1872,6 @@ class SBCScraper:
                                         });
                                         container.dispatchEvent(wheelEvent);
                                         
-                                        // Method 4: Dispatch scroll event
                                         const scrollEvent = new Event('scroll', { bubbles: true });
                                         container.dispatchEvent(scrollEvent);
                                         
@@ -1949,7 +1899,7 @@ class SBCScraper:
                             // If no container scrolled, try window scrolling
                             if (!scrolledContainer) {
                                 const beforeY = window.pageYOffset;
-                                const scrollDistance = Math.max(window.innerHeight * 1.5, 800);
+                                const scrollDistance = Math.max(window.innerHeight * 1.5, 1000);
                                 
                                 window.scrollBy(0, scrollDistance);
                                 
@@ -1984,17 +1934,34 @@ class SBCScraper:
                         logger.info(
                             f"   Scroll: {info['beforeScrollTop']} → {info['afterScrollTop']} (+{info['afterScrollTop'] - info['beforeScrollTop']}px)"
                         )
+                        consecutive_failed_scrolls = 0
                     else:
+                        consecutive_failed_scrolls += 1
                         logger.warning(
-                            "⚠️ No scrollable container found or scroll failed"
+                            f"⚠️ No scrollable container found or scroll failed (attempt {consecutive_failed_scrolls}/{max_failed_scrolls})"
                         )
-                        # Force scroll attempt on the page
-                        await self.page.keyboard.press("PageDown")
-                        await asyncio.sleep(0.5)
-                        await self.page.keyboard.press("PageDown")
-                        logger.info("📄 Attempted PageDown as fallback")
+                        
+                        # If we've failed to scroll multiple times, try different approaches
+                        if consecutive_failed_scrolls >= max_failed_scrolls:
+                            logger.warning("Too many failed scroll attempts, trying page refresh...")
+                            await self.page.reload(wait_until="networkidle")
+                            await asyncio.sleep(3)
+                            
+                            # Wait for attendees to load after refresh
+                            await self.page.wait_for_selector(
+                                SBCSelectors.ATTENDEE_ITEM, timeout=10000
+                            )
+                            consecutive_failed_scrolls = 0
+                            scroll_container = None  # Force re-detection
+                        else:
+                            # Force scroll attempt on the page
+                            await self.page.keyboard.press("PageDown")
+                            await asyncio.sleep(0.5)
+                            await self.page.keyboard.press("PageDown")
+                            logger.info("📄 Attempted PageDown as fallback")
 
                 except Exception as scroll_error:
+                    consecutive_failed_scrolls += 1
                     logger.warning(f"Error during scrolling: {scroll_error}")
 
                 # Wait for new content to load
@@ -2035,6 +2002,7 @@ class SBCScraper:
             f"Scrolling scrape completed after {scroll_attempts} attempts"
         )
         logger.info(f"Total new attendees scraped: {total_scraped}")
+        logger.info(f"Total processed attendee IDs tracked: {len(processed_attendee_ids)}")
         return total_scraped
 
     async def scrape_visible_attendees(
