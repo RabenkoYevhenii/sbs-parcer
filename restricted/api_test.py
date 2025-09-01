@@ -464,5 +464,4 @@ if __name__ == "__main__":
         traceback.print_exc()
 
     finally:
-        input("\n⏸️ Натисніть Enter щоб закрити браузер...")
         scraper.close()
