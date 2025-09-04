@@ -3,6 +3,10 @@ attrs==25.3.0
 beautifulsoup4==4.13.4
 certifi==2025.6.15
 charset-normalizer==3.4.3
+google-auth==2.36.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+google-api-python-client==2.155.0
 greenlet==3.2.3
 h11==0.16.0
 idna==3.10
