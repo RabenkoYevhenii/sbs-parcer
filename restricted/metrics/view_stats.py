@@ -44,17 +44,33 @@ def view_statistics():
                 valid = row["Провалидированых"]
                 sent = row["Отправлено Сообщений"]
                 answered = row["Ответили"]
-                
+
                 # New columns with defaults
                 daniil = row.get("Даниил", 0)
                 yaroslav = row.get("Ярослав", 0)
                 followups = row.get("Количество follow_up", 0)
 
                 # Percentages (expecting decimal values, not * 100)
-                valid_pct = row.get("% Валидных", (valid / scraped) if scraped > 0 else 0) * 100
-                answer_pct = row.get("% Ответивших", (answered / sent) if sent > 0 else 0) * 100
-                daniil_pct = row.get("% Даниил", (daniil / sent) if sent > 0 else 0) * 100
-                yaroslav_pct = row.get("% Ярослав", (yaroslav / sent) if sent > 0 else 0) * 100
+                valid_pct = (
+                    row.get(
+                        "% Валидных", (valid / scraped) if scraped > 0 else 0
+                    )
+                    * 100
+                )
+                answer_pct = (
+                    row.get(
+                        "% Ответивших", (answered / sent) if sent > 0 else 0
+                    )
+                    * 100
+                )
+                daniil_pct = (
+                    row.get("% Даниил", (daniil / sent) if sent > 0 else 0)
+                    * 100
+                )
+                yaroslav_pct = (
+                    row.get("% Ярослав", (yaroslav / sent) if sent > 0 else 0)
+                    * 100
+                )
             else:
                 # Fallback to old column names
                 date = row["date"]
@@ -62,7 +78,7 @@ def view_statistics():
                 valid = row["valid_by_filters"]
                 sent = row["sent_messages"]
                 answered = row["answered"]
-                
+
                 # Default values for new columns
                 daniil = 0
                 yaroslav = 0
@@ -81,7 +97,7 @@ def view_statistics():
                     answer_pct = row["answer_percentage"] * 100
                 else:
                     answer_pct = (answered / sent * 100) if sent > 0 else 0
-                    
+
                 daniil_pct = 0
                 yaroslav_pct = 0
 
@@ -125,8 +141,12 @@ def view_statistics():
         print(
             f"   • Получено ответов: {total_answered:,} ({total_answer_pct:.1f}%)"
         )
-        print(f"   • Сообщений от Данила: {total_daniil:,} ({total_daniil_pct:.1f}%)")
-        print(f"   • Сообщений от Ярослава: {total_yaroslav:,} ({total_yaroslav_pct:.1f}%)")
+        print(
+            f"   • Сообщений от Данила: {total_daniil:,} ({total_daniil_pct:.1f}%)"
+        )
+        print(
+            f"   • Сообщений от Ярослава: {total_yaroslav:,} ({total_yaroslav_pct:.1f}%)"
+        )
         print(f"   • Follow-up сообщений: {total_followups:,}")
 
         if total_sent > 0:
