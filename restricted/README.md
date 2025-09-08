@@ -6,7 +6,8 @@ A sophisticated web scraper for the SBC (Sports Betting Community) events websit
 
 - 🔐 **Login-protected scraping** - Handles authentication automatically
 - 🔄 **Duplicate detection** - Automatically skips already scraped records
-- � **Infinite scroll support** - Handles scroll-based pagination automatically
+- 📞 **Automatic contact extraction** - Extracts emails, phones, social handles from introduction text
+- 🔍 **Infinite scroll support** - Handles scroll-based pagination automatically
 - 🎭 **Browser automation** - Uses Playwright for reliable scraping
 - 📊 **CSV output** - Structured data export
 - 🛡️ **Rate limiting** - Respectful request timing
