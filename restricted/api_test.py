@@ -222,8 +222,10 @@ class SBCAttendeesScraper:
             self.existing_chats.clear()
             return True
 
-    def api_request(self, method, endpoint, data=None):
-        """Виконує API запит через браузер"""
+    def api_request(
+        self, method, endpoint, data=None, max_retries=3, timeout_seconds=3
+    ):
+        """Виконує API запит через браузер з таймаутом і повторними спробами"""
         if not self.is_logged_in:
             print("❌ Спочатку потрібно залогінитися")
             return None
@@ -234,59 +236,110 @@ class SBCAttendeesScraper:
             else endpoint
         )
 
-        js_code = """
-            async (params) => {
-                const {url, method, data} = params;
-                const options = {
-                    method: method,
-                    headers: {
-                        'Accept': 'application/json, text/plain, */*',
-                        'Content-Type': 'application/json'
+        for attempt in range(max_retries):
+            try:
+                js_code = """
+                    async (params) => {
+                        const {url, method, data, timeout} = params;
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), timeout * 1000);
+                        
+                        const options = {
+                            method: method,
+                            headers: {
+                                'Accept': 'application/json, text/plain, */*',
+                                'Content-Type': 'application/json'
+                            },
+                            signal: controller.signal
+                        };
+                        
+                        if (data && method !== 'GET') {
+                            options.body = JSON.stringify(data);
+                        }
+                        
+                        try {
+                            const response = await fetch(url, options);
+                            clearTimeout(timeoutId);
+                            let responseData;
+                            const contentType = response.headers.get('content-type');
+                            
+                            if (contentType && contentType.includes('application/json')) {
+                                responseData = await response.json();
+                            } else {
+                                responseData = await response.text();
+                            }
+                            
+                            return {
+                                status: response.status,
+                                data: responseData
+                            };
+                        } catch (error) {
+                            clearTimeout(timeoutId);
+                            return {
+                                status: 'error',
+                                message: error.toString()
+                            };
+                        }
                     }
-                };
-                
-                if (data && method !== 'GET') {
-                    options.body = JSON.stringify(data);
-                }
-                
-                try {
-                    const response = await fetch(url, options);
-                    let responseData;
-                    const contentType = response.headers.get('content-type');
-                    
-                    if (contentType && contentType.includes('application/json')) {
-                        responseData = await response.json();
-                    } else {
-                        responseData = await response.text();
-                    }
-                    
-                    return {
-                        status: response.status,
-                        data: responseData
-                    };
-                } catch (error) {
-                    return {
-                        status: 'error',
-                        message: error.toString()
-                    };
-                }
-            }
-        """
+                """
 
-        params = {"url": url, "method": method, "data": data}
-        result = self.page.evaluate(js_code, params)
+                params = {
+                    "url": url,
+                    "method": method,
+                    "data": data,
+                    "timeout": timeout_seconds,
+                }
+                result = self.page.evaluate(js_code, params)
 
-        status = result.get("status", 0)
-        if 200 <= status < 300:
-            # Для 204 No Content повертаємо True замість даних
-            if status == 204:
-                return True
-            return result.get("data")
-        else:
-            print(f"   ❌ Помилка {endpoint}: {status}")
-            if result.get("data"):
-                print(f"      Деталі: {result.get('data')}")
-            return None
+                status = result.get("status", 0)
+
+                # Обрабатываем строковый статус 'error' отдельно
+                if status == "error":
+                    if attempt < max_retries - 1:
+                        print(
+                            f"   ⚠️ Попытка {attempt + 1} не удалась: {result.get('message')}"
+                        )
+                        print(f"   🔄 Повторная попытка через 3 секунды...")
+                        time.sleep(3)
+                        continue
+                    else:
+                        print(
+                            f"   ❌ Помилка {endpoint} після {max_retries} спроб: {result.get('message')}"
+                        )
+                        return None
+                # Обрабатываем числовые статусы
+                elif isinstance(status, int) and 200 <= status < 300:
+                    # Для 204 No Content повертаємо True замість даних
+                    if status == 204:
+                        return True
+                    return result.get("data")
+                else:
+                    if attempt < max_retries - 1:
+                        print(f"   ⚠️ Попытка {attempt + 1}: Статус {status}")
+                        print(f"   🔄 Повторная попытка через 3 секунды...")
+                        time.sleep(3)
+                        continue
+                    else:
+                        print(
+                            f"   ❌ Помилка {endpoint} після {max_retries} спроб: {status}"
+                        )
+                        if result.get("data"):
+                            print(f"      Деталі: {result.get('data')}")
+                        return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"   ⚠️ Исключение при попытке {attempt + 1}: {e}")
+                    print(f"   🔄 Повторная попытка через 3 секунды...")
+                    time.sleep(3)
+                    continue
+                else:
+                    print(
+                        f"   ❌ Исключение {endpoint} після {max_retries} спроб: {e}"
+                    )
+                    return None
+
+        return None
 
     def advanced_search(self, from_index=0, size=2000):
         """Виконує advanced search з фільтрами"""
@@ -467,8 +520,14 @@ class SBCAttendeesScraper:
 
     def send_message_to_user(
         self, target_user_id: str, message: str, full_name: str = None
-    ) -> bool:
-        """Повний пайплайн відправки повідомлення користувачу з автоматичним follow-up"""
+    ) -> str:
+        """Повний пайплайн відправки повідомлення користувачу з автоматичним follow-up
+
+        Returns:
+        - "success": сообщение успешно отправлено
+        - "already_contacted": чат уже содержит сообщения, пропускаем
+        - "failed": ошибка отправки
+        """
         # 1. Перевіряємо чи є існуючий чат
         chat_id = self.find_chat_with_user(target_user_id)
 
@@ -479,7 +538,14 @@ class SBCAttendeesScraper:
             )
             if self.check_chat_has_messages(chat_id):
                 print(f"       ⏭️ Чат вже містить повідомлення, пропускаємо")
-                return False  # Не відправляємо, якщо вже є повідомлення
+                # Обновляем CSV со статусом "Sent" так как контакт уже был обработан
+                if full_name:
+                    data_dir = "restricted/data"
+                    csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+                    self.update_csv_with_messaging_status(
+                        csv_file, target_user_id, full_name, chat_id
+                    )
+                return "already_contacted"
             else:
                 print(
                     f"       ✅ Чат порожній, можна відправляти повідомлення"
@@ -489,11 +555,11 @@ class SBCAttendeesScraper:
             print(f"       🆕 Створюємо новий чат...")
             chat_id = self.create_chat(target_user_id)
             if not chat_id:
-                return False
+                return "failed"
 
         # 3. Відправляємо перше повідомлення
         if not self.send_message(chat_id, message):
-            return False
+            return "failed"
 
         # 4. Чекаємо 5 секунд і відправляємо друге повідомлення
         print(f"       ✅ Перше повідомлення відправлено")
@@ -503,7 +569,7 @@ class SBCAttendeesScraper:
         # 5. Відправляємо друге повідомлення
         if not self.send_message(chat_id, self.second_follow_up_message):
             print(f"       ⚠️ Не вдалося відправити друге повідомлення")
-            return False
+            return "failed"
 
         print(
             f"       ✅ Друге повідомлення відправлено: '{self.second_follow_up_message}'"
@@ -522,7 +588,7 @@ class SBCAttendeesScraper:
                 f"       ⚠️ Не вдалося оновити CSV - відсутнє ім'я користувача"
             )
 
-        return True
+        return "success"
 
     def load_chat_details(self, chat_id: str) -> Optional[Dict]:
         """Завантажує детальну інформацію про чат"""
@@ -873,9 +939,15 @@ class SBCAttendeesScraper:
     def parse_date_flexible(self, date_str, current_date) -> datetime:
         """Гнучке парсування дат у різних форматах"""
         # Check for NaN values without requiring pandas in scope
-        if (date_str is None or 
-            str(date_str).lower() in ["nan", "", "none"] or
-            (hasattr(date_str, '__class__') and 'float' in str(date_str.__class__) and str(date_str) == 'nan')):
+        if (
+            date_str is None
+            or str(date_str).lower() in ["nan", "", "none"]
+            or (
+                hasattr(date_str, "__class__")
+                and "float" in str(date_str.__class__)
+                and str(date_str) == "nan"
+            )
+        ):
             return None
 
         date_str = str(date_str).strip()
@@ -933,11 +1005,13 @@ class SBCAttendeesScraper:
 
         return {"positions": positions, "gaming_verticals": gaming_verticals}
 
-    def apply_automatic_filters(self, df) -> pd.DataFrame:
+    def apply_automatic_filters(
+        self, df, enable_position_filter: bool = True
+    ) -> pd.DataFrame:
         """Автоматично застосовує фільтри за релевантними позиціями та gaming verticals"""
         print("\n🔧 АВТОМАТИЧНІ ФІЛЬТРИ")
         print("=" * 40)
-        
+
         original_count = len(df)
         filtered_df = df.copy()
 
@@ -951,60 +1025,75 @@ class SBCAttendeesScraper:
             ]
             excluded_land = before_gv_filter - len(filtered_df)
             if excluded_land > 0:
-                print(f"🚫 Виключено 'land' gaming vertical: -{excluded_land} записів")
+                print(
+                    f"🚫 Виключено 'land' gaming vertical: -{excluded_land} записів"
+                )
 
-        # Filter by position (include key positions)
-        position_keywords = [
-            "chief executive officer",
-            "ceo", 
-            "chief operating officer",
-            "coo",
-            "chief financial officer", 
-            "cfo",
-            "chief payments officer",
-            "cpo",
-            "payments",
-            "psp",
-            "operations",
-            "business development",
-            "partnerships", 
-            "relationship",
-            "country manager",
-        ]
+        # Filter by position (include key positions) - only if enabled
+        if enable_position_filter:
+            position_keywords = [
+                "chief executive officer",
+                "ceo",
+                "chief operating officer",
+                "coo",
+                "chief financial officer",
+                "cfo",
+                "chief payments officer",
+                "cpo",
+                "payments",
+                "psp",
+                "operations",
+                "business development",
+                "partnerships",
+                "relationship",
+                "country manager",
+            ]
 
-        if "position" in filtered_df.columns:
-            before_pos_filter = len(filtered_df)
-            
-            # Convert positions to lowercase for comparison
-            filtered_df["position_lower"] = filtered_df["position"].str.lower().fillna("")
+            if "position" in filtered_df.columns:
+                before_pos_filter = len(filtered_df)
 
-            # Create mask for positions containing keywords
-            position_mask = filtered_df["position_lower"].str.contains(
-                "|".join(position_keywords), case=False, na=False
-            )
+                # Convert positions to lowercase for comparison
+                filtered_df["position_lower"] = (
+                    filtered_df["position"].str.lower().fillna("")
+                )
 
-            # Exclude "coordinator" for COO
-            coordinator_mask = filtered_df["position_lower"].str.contains(
-                "coordinator", case=False, na=False
-            )
-            coo_mask = filtered_df["position_lower"].str.contains(
-                "coo", case=False, na=False
-            )
+                # Create mask for positions containing keywords
+                position_mask = filtered_df["position_lower"].str.contains(
+                    "|".join(position_keywords), case=False, na=False
+                )
 
-            # Apply filter
-            filtered_df = filtered_df[position_mask & ~(coo_mask & coordinator_mask)]
-            
-            # Drop temporary column
-            filtered_df = filtered_df.drop("position_lower", axis=1)
-            
-            excluded_positions = before_pos_filter - len(filtered_df)
-            if excluded_positions > 0:
-                print(f"🎯 Фільтр за релевантними позиціями: -{excluded_positions} записів")
-                print(f"   Ключові слова: {', '.join(position_keywords[:5])}...")
+                # Exclude "coordinator" for COO
+                coordinator_mask = filtered_df["position_lower"].str.contains(
+                    "coordinator", case=False, na=False
+                )
+                coo_mask = filtered_df["position_lower"].str.contains(
+                    "coo", case=False, na=False
+                )
+
+                # Apply filter
+                filtered_df = filtered_df[
+                    position_mask & ~(coo_mask & coordinator_mask)
+                ]
+
+                # Drop temporary column
+                filtered_df = filtered_df.drop("position_lower", axis=1)
+
+                excluded_positions = before_pos_filter - len(filtered_df)
+                if excluded_positions > 0:
+                    print(
+                        f"🎯 Фільтр за релевантними позиціями: -{excluded_positions} записів"
+                    )
+                    print(
+                        f"   Ключові слова: {', '.join(position_keywords[:5])}..."
+                    )
+        else:
+            print("⚠️ Фільтр за позиціями вимкнено - включені всі позиції")
 
         total_excluded = original_count - len(filtered_df)
-        print(f"✅ Загалом відфільтровано: {len(filtered_df)} з {original_count} ({total_excluded} виключено)")
-        
+        print(
+            f"✅ Загалом відфільтровано: {len(filtered_df)} з {original_count} ({total_excluded} виключено)"
+        )
+
         return filtered_df
 
     def apply_user_filters(self, df) -> pd.DataFrame:
@@ -1085,7 +1174,7 @@ class SBCAttendeesScraper:
         if not PANDAS_AVAILABLE:
             print("❌ pandas не встановлено, використовуємо стару логіку")
             return []
-            
+
         if not csv_file:
             data_dir = "restricted/data"
             csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
@@ -1114,7 +1203,9 @@ class SBCAttendeesScraper:
 
             # Застосовуємо автоматичні фільтри
             if use_filters and len(filtered_df) > 0:
-                filtered_df = self.apply_automatic_filters(filtered_df)
+                filtered_df = self.apply_automatic_filters(
+                    filtered_df, enable_position_filter=True
+                )
                 print(
                     f"📊 Після застосування фільтрів: {len(filtered_df)} кандидатів"
                 )
@@ -1260,14 +1351,18 @@ class SBCAttendeesScraper:
         # Load the chat list to get only accessible chats for current account
         print("📥 Завантажуємо список доступних чатів...")
         chats_data = self.load_chats_list()
-        
+
         if not chats_data:
             print("❌ Не вдалося завантажити чати")
             return {"error": 1}
 
         # Create a set of accessible chat IDs for quick lookup
-        accessible_chat_ids = {chat.get("chatId") for chat in chats_data if chat.get("chatId")}
-        print(f"📋 Знайдено {len(accessible_chat_ids)} доступних чатів для поточного акаунта")
+        accessible_chat_ids = {
+            chat.get("chatId") for chat in chats_data if chat.get("chatId")
+        }
+        print(
+            f"📋 Знайдено {len(accessible_chat_ids)} доступних чатів для поточного акаунта"
+        )
 
         data_dir = "restricted/data"
         csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
@@ -1385,33 +1480,35 @@ class SBCAttendeesScraper:
         """Process follow-up campaigns split by author to avoid API permission errors"""
         print(f"\n📬 FOLLOW-UP КАМПАНІЇ ПО АВТОРАМ")
         print("=" * 50)
-        
+
         # Load CSV data
         data_dir = "restricted/data"
         csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
-        
+
         if not os.path.exists(csv_file):
             print(f"❌ Файл {csv_file} не знайдено")
             return {"error": 1}
-        
+
         try:
             import pandas as pd
+
             df = pd.read_csv(csv_file, encoding="utf-8")
-            
-            # Get current date in Kiev timezone  
+
+            # Get current date in Kiev timezone
             from zoneinfo import ZoneInfo
             from datetime import datetime
+
             kiev_tz = ZoneInfo("Europe/Kiev")
             current_date = datetime.now(kiev_tz).date()
-            
+
             # Split data by author
-            daniil_data = df[df['author'] == 'Daniil'].copy()
-            yaroslav_data = df[df['author'] == 'Yaroslav'].copy()
-            
+            daniil_data = df[df["author"] == "Daniil"].copy()
+            yaroslav_data = df[df["author"] == "Yaroslav"].copy()
+
             print(f"\n📊 Розподіл даних по авторам:")
             print(f"  Daniil: {len(daniil_data)} записів")
             print(f"  Yaroslav: {len(yaroslav_data)} записів")
-            
+
             total_stats = {
                 "total_candidates": 0,
                 "analyzed": 0,
@@ -1422,99 +1519,144 @@ class SBCAttendeesScraper:
                 "already_sent": 0,
                 "errors": 0,
             }
-            
+
             # Process each author's data separately
-            for author_name, author_data in [('Daniil', daniil_data), ('Yaroslav', yaroslav_data)]:
+            for author_name, author_data in [
+                ("Daniil", daniil_data),
+                ("Yaroslav", yaroslav_data),
+            ]:
                 if author_data.empty:
                     print(f"\n⏭️ Немає даних для {author_name}, пропускаємо...")
                     continue
-                
+
                 print(f"\n🔄 Обробляємо дані для {author_name}...")
-                
+
                 # Switch to appropriate account
-                if author_name == 'Daniil':
-                    if not self.switch_account('messenger1'):
-                        print(f"❌ Не вдалося переключитися на аккаунт messenger1")
+                if author_name == "Daniil":
+                    if not self.switch_account("messenger1"):
+                        print(
+                            f"❌ Не вдалося переключитися на аккаунт messenger1"
+                        )
                         continue
                 else:  # Yaroslav
-                    if not self.switch_account('messenger2'):
-                        print(f"❌ Не вдалося переключитися на аккаунт messenger2")
+                    if not self.switch_account("messenger2"):
+                        print(
+                            f"❌ Не вдалося переключитися на аккаунт messenger2"
+                        )
                         continue
-                
+
                 # Filter candidates who need follow-up based on date logic
                 candidates_to_process = []
-                
+
                 for _, row in author_data.iterrows():
-                    if pd.isna(row.get('follow_up_date')) or pd.isna(row.get('chat_id')):
+                    if pd.isna(row.get("follow_up_date")) or pd.isna(
+                        row.get("chat_id")
+                    ):
                         continue
-                    
+
                     try:
-                        follow_up_date_str = str(row['follow_up_date'])
-                        follow_up_date = datetime.strptime(follow_up_date_str, '%d.%m').replace(year=current_date.year).date()
-                        
+                        follow_up_date_str = str(row["follow_up_date"])
+                        follow_up_date = (
+                            datetime.strptime(follow_up_date_str, "%d.%m")
+                            .replace(year=current_date.year)
+                            .date()
+                        )
+
                         # Handle year transition
-                        if follow_up_date < datetime(current_date.year, 3, 1).date():
-                            follow_up_date = follow_up_date.replace(year=current_date.year + 1)
-                        
+                        if (
+                            follow_up_date
+                            < datetime(current_date.year, 3, 1).date()
+                        ):
+                            follow_up_date = follow_up_date.replace(
+                                year=current_date.year + 1
+                            )
+
                         if current_date >= follow_up_date:
                             candidates_to_process.append(row)
-                            
+
                     except (ValueError, TypeError) as e:
-                        print(f"⚠️ Неправильний формат дати для {row.get('full_name', 'Unknown')}: {e}")
+                        print(
+                            f"⚠️ Неправильний формат дати для {row.get('full_name', 'Unknown')}: {e}"
+                        )
                         continue
-                
+
                 if not candidates_to_process:
-                    print(f"✅ Немає кандидатів для follow-up обробки для {author_name} сьогодні")
+                    print(
+                        f"✅ Немає кандидатів для follow-up обробки для {author_name} сьогодні"
+                    )
                     continue
-                
-                print(f"📋 Знайдено {len(candidates_to_process)} кандидатів для {author_name}")
+
+                print(
+                    f"📋 Знайдено {len(candidates_to_process)} кандидатів для {author_name}"
+                )
                 total_stats["total_candidates"] += len(candidates_to_process)
-                
+
                 # Process each candidate
                 for i, candidate in enumerate(candidates_to_process, 1):
                     try:
-                        chat_id = str(candidate['chat_id'])
-                        full_name = candidate.get('full_name', 'Unknown')
-                        follow_up_type = candidate.get('Follow-up type', 'follow-up_day_7')
-                        
-                        print(f"  [{i}/{len(candidates_to_process)}] 🔄 Обробляємо: {full_name} (Chat: {chat_id[:8]}...)")
-                        
+                        chat_id = str(candidate["chat_id"])
+                        full_name = candidate.get("full_name", "Unknown")
+                        follow_up_type = candidate.get(
+                            "Follow-up type", "follow-up_day_7"
+                        )
+
+                        print(
+                            f"  [{i}/{len(candidates_to_process)}] 🔄 Обробляємо: {full_name} (Chat: {chat_id[:8]}...)"
+                        )
+
                         # Add delay between requests
                         import time
                         import random
+
                         delay = random.uniform(1.0, 3.0)
                         time.sleep(delay)
-                        
+
                         # Load chat details
                         chat_details = self.load_chat_details(chat_id)
                         if not chat_details:
                             print(f"    ❌ Не вдалося завантажити чат")
                             total_stats["errors"] += 1
                             continue
-                        
+
                         # Analyze chat for responses
                         analysis = self.analyze_chat_for_followup(chat_details)
                         total_stats["analyzed"] += 1
-                        
+
                         # Check if there's a response
                         if analysis["has_response"]:
                             print(f"    ✅ Є відповідь від користувача")
                             # Update status in CSV from "Sent" to "Answered"
-                            if self.update_csv_response_status(csv_file, candidate.get('user_id', ''), True, full_name, chat_id):
+                            if self.update_csv_response_status(
+                                csv_file,
+                                candidate.get("user_id", ""),
+                                True,
+                                full_name,
+                                chat_id,
+                            ):
                                 total_stats["status_updated"] += 1
                             continue
-                        
+
                         # Check if this follow-up type was already sent
-                        already_sent = self.check_followup_already_sent(csv_file, chat_id, follow_up_type)
+                        already_sent = self.check_followup_already_sent(
+                            csv_file, chat_id, follow_up_type
+                        )
                         if already_sent:
-                            print(f"    ⏭️ Follow-up {follow_up_type} вже був відправлений")
+                            print(
+                                f"    ⏭️ Follow-up {follow_up_type} вже був відправлений"
+                            )
                             total_stats["already_sent"] += 1
                             continue
-                        
+
                         # Send follow-up message
-                        first_name = full_name.split()[0] if full_name.split() else "there"
-                        
-                        if self.send_followup_message(chat_id, follow_up_type, first_name):
+                        first_name = (
+                            full_name.split()[0]
+                            if full_name.split()
+                            else "there"
+                        )
+
+                        if self.send_followup_message(
+                            chat_id, follow_up_type, first_name
+                        ):
                             print(f"    ✅ Follow-up відправлено")
                             if "day_3" in follow_up_type:
                                 total_stats["day_3_sent"] += 1
@@ -1522,24 +1664,30 @@ class SBCAttendeesScraper:
                                 total_stats["day_7_sent"] += 1
                             elif "final" in follow_up_type:
                                 total_stats["final_sent"] += 1
-                            
+
                             # Update Follow-up status in CSV
-                            self.update_csv_followup_status(csv_file, chat_id, follow_up_type)
-                            
+                            self.update_csv_followup_status(
+                                csv_file, chat_id, follow_up_type
+                            )
+
                             # Delay after sending message
                             message_delay = random.uniform(2.0, 5.0)
                             time.sleep(message_delay)
                         else:
                             print(f"    ❌ Помилка відправки follow-up")
                             total_stats["errors"] += 1
-                            
+
                     except Exception as e:
-                        print(f"    ❌ Помилка обробки {candidate.get('full_name', 'Unknown')}: {e}")
+                        print(
+                            f"    ❌ Помилка обробки {candidate.get('full_name', 'Unknown')}: {e}"
+                        )
                         total_stats["errors"] += 1
-            
+
             # Print summary
             print(f"\n📊 ЗАГАЛЬНІ ПІДСУМКИ FOLLOW-UP КАМПАНІЇ:")
-            print(f"   📋 Всього кандидатів: {total_stats['total_candidates']}")
+            print(
+                f"   📋 Всього кандидатів: {total_stats['total_candidates']}"
+            )
             print(f"   🔍 Проаналізовано: {total_stats['analyzed']}")
             print(f"   📨 Follow-up 3 дні: {total_stats['day_3_sent']}")
             print(f"   📨 Follow-up 7 днів: {total_stats['day_7_sent']}")
@@ -1547,20 +1695,28 @@ class SBCAttendeesScraper:
             print(f"   🔄 Статуси оновлено: {total_stats['status_updated']}")
             print(f"   ⏭️ Вже відправлені: {total_stats['already_sent']}")
             print(f"   ❌ Помилок: {total_stats['errors']}")
-            
-            total_sent = total_stats["day_3_sent"] + total_stats["day_7_sent"] + total_stats["final_sent"]
+
+            total_sent = (
+                total_stats["day_3_sent"]
+                + total_stats["day_7_sent"]
+                + total_stats["final_sent"]
+            )
             print(f"   📈 Всього відправлено: {total_sent}")
-            
+
             return total_stats
-            
+
         except Exception as e:
             print(f"❌ Помилка в обробці follow-up кампаній по авторам: {e}")
             import traceback
+
             traceback.print_exc()
             return {"error": 1}
 
     def extract_user_data_from_csv(
-        self, csv_file: str, apply_filters: bool = True
+        self,
+        csv_file: str,
+        apply_filters: bool = True,
+        enable_position_filter: bool = True,
     ) -> List[Dict[str, str]]:
         """Витягує user ID та імена з CSV файлу з опціональною фільтрацією"""
         user_data = []
@@ -1652,51 +1808,56 @@ class SBCAttendeesScraper:
                         f"   Після фільтру gaming_vertical (без 'land'): {len(df)} записів"
                     )
 
-                # 5. Фільтр по позиції (містить ключові слова)
-                position_keywords = [
-                    "chief executive officer",
-                    "ceo",
-                    "chief operating officer",
-                    "coo",
-                    "chief financial officer",
-                    "cfo",
-                    "chief payments officer",
-                    "cpo",
-                    "payments",
-                    "psp",
-                    "operations",
-                    "business development",
-                    "partnerships",
-                    "relationship",
-                    "country manager",
-                ]
-                if "position" in df.columns:
-                    # Конвертуємо позиції в нижній регістр для порівняння
-                    df["position_lower"] = (
-                        df["position"].str.lower().fillna("")
-                    )
+                # 5. Фільтр по позиції (містить ключові слова) - тільки якщо ввімкнено
+                if enable_position_filter:
+                    position_keywords = [
+                        "chief executive officer",
+                        "ceo",
+                        "chief operating officer",
+                        "coo",
+                        "chief financial officer",
+                        "cfo",
+                        "chief payments officer",
+                        "cpo",
+                        "payments",
+                        "psp",
+                        "operations",
+                        "business development",
+                        "partnerships",
+                        "relationship",
+                        "country manager",
+                    ]
+                    if "position" in df.columns:
+                        # Конвертуємо позиції в нижній регістр для порівняння
+                        df["position_lower"] = (
+                            df["position"].str.lower().fillna("")
+                        )
 
-                    # Створюємо маску для позицій що містять ключові слова
-                    position_mask = df["position_lower"].str.contains(
-                        "|".join(position_keywords), case=False, na=False
-                    )
+                        # Створюємо маску для позицій що містять ключові слова
+                        position_mask = df["position_lower"].str.contains(
+                            "|".join(position_keywords), case=False, na=False
+                        )
 
-                    # Виключаємо "coordinator" для COO
-                    coordinator_mask = df["position_lower"].str.contains(
-                        "coordinator", case=False, na=False
-                    )
-                    coo_mask = df["position_lower"].str.contains(
-                        "coo", case=False, na=False
-                    )
+                        # Виключаємо "coordinator" для COO
+                        coordinator_mask = df["position_lower"].str.contains(
+                            "coordinator", case=False, na=False
+                        )
+                        coo_mask = df["position_lower"].str.contains(
+                            "coo", case=False, na=False
+                        )
 
-                    # Застосовуємо фільтр: включаємо позиції з ключовими словами, але виключаємо coordinator при COO
-                    df = df[position_mask & ~(coo_mask & coordinator_mask)]
+                        # Застосовуємо фільтр: включаємо позиції з ключовими словами, але виключаємо coordinator при COO
+                        df = df[position_mask & ~(coo_mask & coordinator_mask)]
 
-                    # Видаляємо тимчасову колонку
-                    df = df.drop("position_lower", axis=1)
+                        # Видаляємо тимчасову колонку
+                        df = df.drop("position_lower", axis=1)
 
+                        print(
+                            f"   Після фільтру позиції (ключові слова, виключаючи COO+coordinator): {len(df)} записів"
+                        )
+                else:
                     print(
-                        f"   Після фільтру позиції (ключові слова, виключаючи COO+coordinator): {len(df)} записів"
+                        "   Фільтр за позиціями вимкнено - включені всі позиції"
                     )
 
                 print(
@@ -2196,17 +2357,6 @@ class SBCAttendeesScraper:
                     df["Follow-up type"] = ""
                 df.loc[mask, "Follow-up type"] = f"follow-up_{followup_type}"
 
-                # Додаємо інформацію про тип follow-up до коментаря
-                current_comment = df.loc[mask, "Comment"].iloc[0]
-                if pd.isna(current_comment) or current_comment == "":
-                    new_comment = f"follow-up_{followup_type}"
-                else:
-                    new_comment = (
-                        f"{current_comment}, follow-up_{followup_type}"
-                    )
-
-                df.loc[mask, "Comment"] = new_comment
-
                 # ВАЖЛИВО: Записуємо дату відправки follow-up
                 kyiv_tz = ZoneInfo("Europe/Kiev")
                 current_date = datetime.now(kyiv_tz)
@@ -2289,7 +2439,7 @@ class SBCAttendeesScraper:
             "csv_updated": 0,
             "errors": 0,
             "skipped_group_chats": 0,
-            "accounts_processed": []
+            "accounts_processed": [],
         }
 
         # Список messenger акаунтів для перевірки
@@ -2303,13 +2453,15 @@ class SBCAttendeesScraper:
                 return {"error": 1}
 
             df = pd.read_csv(csv_file)
-            
+
             # Фільтруємо записи зі статусом "Sent"
             sent_mask = df["connected"] == "Sent"
             sent_records = df[sent_mask]
-            
-            print(f"📊 Знайдено {len(sent_records)} записів зі статусом 'Sent'")
-            
+
+            print(
+                f"📊 Знайдено {len(sent_records)} записів зі статусом 'Sent'"
+            )
+
             if len(sent_records) == 0:
                 print("✅ Немає записів для перевірки")
                 return stats
@@ -2320,7 +2472,9 @@ class SBCAttendeesScraper:
                     print(f"⚠️ Акаунт {account_key} не налаштований")
                     continue
 
-                print(f"\n👤 Перевіряємо акаунт: {self.accounts[account_key]['name']}")
+                print(
+                    f"\n👤 Перевіряємо акаунт: {self.accounts[account_key]['name']}"
+                )
                 print("-" * 50)
 
                 # Переключаємося на акаунт
@@ -2354,7 +2508,9 @@ class SBCAttendeesScraper:
                         stats["skipped_group_chats"] += 1
                         continue
 
-                    print(f"   [{i}/{len(chats_data)}] Перевіряємо чат {chat_id[:8]}...")
+                    print(
+                        f"   [{i}/{len(chats_data)}] Перевіряємо чат {chat_id[:8]}..."
+                    )
 
                     # Додаємо випадкову затримку
                     delay = random.uniform(1.0, 2.0)
@@ -2371,17 +2527,25 @@ class SBCAttendeesScraper:
 
                         # Аналізуємо чат на предмет відповідей
                         analysis = self.analyze_chat_for_responses(chat_data)
-                        
+
                         if analysis["has_response"]:
                             stats["responses_found"] += 1
-                            participant_name = analysis.get("participant_name", "")
+                            participant_name = analysis.get(
+                                "participant_name", ""
+                            )
                             participant_id = analysis.get("participant_id", "")
-                            
-                            print(f"       ✅ Знайдено відповідь від {participant_name}")
-                            
+
+                            print(
+                                f"       ✅ Знайдено відповідь від {participant_name}"
+                            )
+
                             # Оновлюємо CSV статус
                             if self.update_csv_response_status_by_chat_id(
-                                csv_file, chat_id, True, participant_name, participant_id
+                                csv_file,
+                                chat_id,
+                                True,
+                                participant_name,
+                                participant_id,
                             ):
                                 stats["csv_updated"] += 1
                                 print(f"       📝 CSV оновлено")
@@ -2394,7 +2558,9 @@ class SBCAttendeesScraper:
 
             # Повертаємося на оригінальний акаунт
             if original_account:
-                print(f"\n🔄 Повертаємося на оригінальний акаунт: {original_account}")
+                print(
+                    f"\n🔄 Повертаємося на оригінальний акаунт: {original_account}"
+                )
                 self.switch_account(original_account)
 
         except Exception as e:
@@ -2438,7 +2604,9 @@ class SBCAttendeesScraper:
             participants = chat_data.get("participants", [])
             for participant in participants:
                 if participant.get("userId") != current_user_id:
-                    result["participant_name"] = participant.get("fullName", "")
+                    result["participant_name"] = participant.get(
+                        "fullName", ""
+                    )
                     result["participant_id"] = participant.get("userId", "")
                     break
 
@@ -2456,7 +2624,7 @@ class SBCAttendeesScraper:
         if response_messages:
             result["has_response"] = True
             result["response_count"] = len(response_messages)
-            
+
             # Парсимо дату першої відповіді
             first_response_timestamp = self.parse_message_timestamp(
                 response_messages[0].get("createdDate", "")
@@ -2467,8 +2635,12 @@ class SBCAttendeesScraper:
         return result
 
     def update_csv_response_status_by_chat_id(
-        self, csv_file: str, chat_id: str, has_response: bool, 
-        participant_name: str = None, participant_id: str = None
+        self,
+        csv_file: str,
+        chat_id: str,
+        has_response: bool,
+        participant_name: str = None,
+        participant_id: str = None,
     ) -> bool:
         """Оновлює статус відповіді в CSV файлі за chat_id"""
         try:
@@ -2476,45 +2648,51 @@ class SBCAttendeesScraper:
                 return False
 
             df = pd.read_csv(csv_file)
-            
+
             # Знаходимо запис за chat_id
             mask = df["chat_id"] == chat_id
-            
+
             if mask.any():
                 # Оновлюємо статус відповіді
                 if has_response:
                     df.loc[mask, "connected"] = "Sent Answer"
                     # Також оновлюємо Follow-up колонку
                     df.loc[mask, "Follow-up"] = "Answer"
-                    
+
                     # Додаємо дату відповіді
                     kyiv_tz = ZoneInfo("Europe/Kiev")
                     current_date = datetime.now(kyiv_tz)
                     date_str = f"{current_date.day}.{current_date.month:02d}"
                     df.loc[mask, "Date"] = date_str
-                
+
                 # Зберігаємо оновлений CSV
                 df.to_csv(csv_file, index=False)
                 return True
             else:
                 # Якщо запис не знайдено за chat_id, можемо спробувати знайти за participant_id
                 if participant_id:
-                    source_mask = df["source_url"].str.contains(participant_id, na=False)
+                    source_mask = df["source_url"].str.contains(
+                        participant_id, na=False
+                    )
                     if source_mask.any():
                         if has_response:
                             df.loc[source_mask, "connected"] = "Sent Answer"
                             df.loc[source_mask, "Follow-up"] = "Answer"
-                            df.loc[source_mask, "chat_id"] = chat_id  # Оновлюємо chat_id
-                            
+                            df.loc[source_mask, "chat_id"] = (
+                                chat_id  # Оновлюємо chat_id
+                            )
+
                             # Додаємо дату відповіді
                             kyiv_tz = ZoneInfo("Europe/Kiev")
                             current_date = datetime.now(kyiv_tz)
-                            date_str = f"{current_date.day}.{current_date.month:02d}"
+                            date_str = (
+                                f"{current_date.day}.{current_date.month:02d}"
+                            )
                             df.loc[source_mask, "Date"] = date_str
-                        
+
                         df.to_csv(csv_file, index=False)
                         return True
-                
+
                 return False
 
         except Exception as e:
@@ -2522,7 +2700,11 @@ class SBCAttendeesScraper:
             return False
 
     def bulk_message_users_from_csv(
-        self, csv_file: str, delay_seconds: int = 3, user_limit: int = None
+        self,
+        csv_file: str,
+        delay_seconds: int = 3,
+        user_limit: int = None,
+        enable_position_filter: bool = True,
     ):
         """Відправляє повідомлення всім користувачам з CSV файлу"""
         print(f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З ФАЙЛУ: {csv_file}")
@@ -2532,7 +2714,11 @@ class SBCAttendeesScraper:
         self.load_chats_list()
 
         # Витягуємо дані користувачів з CSV
-        user_data = self.extract_user_data_from_csv(csv_file)
+        user_data = self.extract_user_data_from_csv(
+            csv_file,
+            apply_filters=True,
+            enable_position_filter=enable_position_filter,
+        )
 
         if not user_data:
             print("❌ Не знайдено користувачів для обробки")
@@ -2610,7 +2796,11 @@ class SBCAttendeesScraper:
         return success_count, failed_count
 
     def bulk_message_multi_account(
-        self, csv_file: str, delay_seconds: int = 3, user_limit: int = None
+        self,
+        csv_file: str,
+        delay_seconds: int = 3,
+        user_limit: int = None,
+        enable_position_filter: bool = True,
     ):
         """Відправляє повідомлення з CSV файлу розподіляючи дані між двома messenger акаунтами"""
         print(
@@ -2618,7 +2808,11 @@ class SBCAttendeesScraper:
         )
 
         # Витягуємо дані користувачів з CSV
-        user_data = self.extract_user_data_from_csv(csv_file)
+        user_data = self.extract_user_data_from_csv(
+            csv_file,
+            apply_filters=True,
+            enable_position_filter=enable_position_filter,
+        )
 
         if not user_data:
             print("❌ Не знайдено користувачів для обробки")
@@ -2628,8 +2822,15 @@ class SBCAttendeesScraper:
         if user_limit and user_limit > 0:
             if len(user_data) > user_limit:
                 user_data = user_data[:user_limit]
+                original_count = len(
+                    self.extract_user_data_from_csv(
+                        csv_file,
+                        apply_filters=True,
+                        enable_position_filter=enable_position_filter,
+                    )
+                )
                 print(
-                    f"🔢 Застосовано ліміт: оброблятимемо {user_limit} з {len(self.extract_user_data_from_csv(csv_file))} доступних користувачів"
+                    f"🔢 Застосовано ліміт: оброблятимемо {user_limit} з {original_count} доступних користувачів"
                 )
 
         # Розділяємо дані навпіл між messenger акаунтами
@@ -3208,9 +3409,42 @@ class SBCAttendeesScraper:
 
                 print(f"\n📁 Selected: {csv_files[file_index]}")
 
+                # Ask about filter preferences
+                print("\n🔧 FILTER SETTINGS")
+                print("=" * 30)
+                print("Available filters:")
+                print(
+                    "1. Gaming vertical filter: Excludes 'land-based' companies (always enabled)"
+                )
+                print(
+                    "2. Position filter: Only includes relevant positions like CEO, CFO, Payments, etc."
+                )
+
+                position_filter_choice = (
+                    input("➡️ Enable position filter? (y/n, default: y): ")
+                    .strip()
+                    .lower()
+                )
+                enable_position_filter = (
+                    position_filter_choice != "n"
+                )  # Default to True unless explicitly 'n'
+
+                if enable_position_filter:
+                    print(
+                        "✅ Position filter enabled - will only target relevant positions"
+                    )
+                else:
+                    print(
+                        "⚠️ Position filter disabled - will target ALL positions"
+                    )
+
                 # Показуємо загальну кількість після фільтрації
                 try:
-                    user_data = self.extract_user_data_from_csv(selected_file)
+                    user_data = self.extract_user_data_from_csv(
+                        selected_file,
+                        apply_filters=True,
+                        enable_position_filter=enable_position_filter,
+                    )
                     total_contacts = len(user_data)
 
                     if total_contacts == 0:
@@ -3220,6 +3454,10 @@ class SBCAttendeesScraper:
                         print(
                             "💡 Спробуйте інший файл або перевірте структуру CSV"
                         )
+                        if not enable_position_filter:
+                            print(
+                                "💡 Або спробуйте ввімкнути фільтр за позиціями"
+                            )
                         return
 
                 except Exception as e:
@@ -3238,7 +3476,9 @@ class SBCAttendeesScraper:
                             print("✅ Файл виправлено, спробуємо ще раз...")
                             try:
                                 user_data = self.extract_user_data_from_csv(
-                                    selected_file
+                                    selected_file,
+                                    apply_filters=True,
+                                    enable_position_filter=enable_position_filter,
                                 )
                                 total_contacts = len(user_data)
 
@@ -3326,7 +3566,10 @@ class SBCAttendeesScraper:
                 ).lower()
                 if confirm == "y":
                     self.bulk_message_multi_account(
-                        selected_file, delay_seconds, user_limit
+                        selected_file,
+                        delay_seconds,
+                        user_limit,
+                        enable_position_filter,
                     )
                 else:
                     print("❌ Multi-messenger messaging cancelled")
@@ -3535,12 +3778,18 @@ class SBCAttendeesScraper:
             return
 
         print(f"📁 CSV file: {csv_file}")
-        print("📋 This will check all chats from messenger accounts and update CSV")
-        print("   with 'Sent Answer' status for participants who have responded.")
+        print(
+            "📋 This will check all chats from messenger accounts and update CSV"
+        )
+        print(
+            "   with 'Sent Answer' status for participants who have responded."
+        )
         print("\n🔧 Process:")
         print("   1. Check all chats from messenger1 account")
         print("   2. Check all chats from messenger2 account")
-        print("   3. Update CSV status to 'Sent Answer' for responded contacts")
+        print(
+            "   3. Update CSV status to 'Sent Answer' for responded contacts"
+        )
         print("   4. Set Follow-up column to 'Answer' for responded contacts")
 
         # Показуємо messenger акаунти
@@ -3556,20 +3805,21 @@ class SBCAttendeesScraper:
         confirm = input(
             "\n🤔 Proceed with checking responses? (y/n): "
         ).lower()
-        
+
         if confirm == "y":
             try:
                 print("\n🚀 Starting response check...")
                 stats = self.check_all_responses_and_update_csv(csv_file)
-                
+
                 if "error" in stats:
                     print("❌ Process failed")
                 else:
                     print("\n✅ Response check completed successfully!")
-                    
+
             except Exception as e:
                 print(f"❌ Error during response check: {e}")
                 import traceback
+
                 traceback.print_exc()
         else:
             print("❌ Response check cancelled")
