@@ -41,6 +41,10 @@ class SBCAttendeesScraper:
         # Initialize contact extractor for immediate contact extraction during scraping
         self.contact_extractor = ContactExtractor()
 
+        # Company exclusion list cache
+        self.excluded_companies = []
+        self._load_excluded_companies()
+
         # Валідація обов'язкових environment variables
         self._validate_env_variables()
 
@@ -65,6 +69,13 @@ class SBCAttendeesScraper:
                 "password": settings.messenger2_password,
                 "user_id": settings.messenger2_user_id,
                 "name": f"Messenger Account 2 ({settings.messenger2_username})",
+                "role": "messaging",
+            },
+            "messenger3": {
+                "username": settings.messenger3_username,
+                "password": settings.messenger3_password,
+                "user_id": settings.messenger3_user_id,
+                "name": f"Messenger Account 3 ({settings.messenger3_username})",
                 "role": "messaging",
             },
         }
@@ -93,6 +104,249 @@ class SBCAttendeesScraper:
         kyiv_tz = ZoneInfo("Europe/Kiev")
         self.sbc_start_date = datetime(2025, 9, 16, tzinfo=kyiv_tz)
 
+    def get_data_dir(self):
+        """Повертає правильний шлях до папки data"""
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(script_dir, "data")
+
+    def _load_excluded_companies(self):
+        """Завантажує список компаній для виключення з CSV файлу"""
+        exclude_file = os.path.join(self.get_data_dir(), "Exclude list.csv")
+
+        if not os.path.exists(exclude_file):
+            print(f"⚠️ Файл виключень не знайдено: {exclude_file}")
+            return
+
+        try:
+            self.excluded_companies = []
+            with open(exclude_file, "r", encoding="utf-8") as f:
+                # Skip header
+                next(f)
+                for line in f:
+                    company_name = line.strip()
+                    if company_name:
+                        # Normalize company name for better matching
+                        normalized = self._normalize_company_name(company_name)
+                        self.excluded_companies.append(
+                            {
+                                "original": company_name,
+                                "normalized": normalized,
+                            }
+                        )
+
+            print(
+                f"📋 Завантажено {len(self.excluded_companies)} компаній до списку виключень"
+            )
+
+        except Exception as e:
+            print(f"❌ Помилка завантаження списку виключень: {e}")
+
+    def _normalize_company_name(self, company_name: str) -> str:
+        """Нормалізує назву компанії для кращого порівняння"""
+        if not company_name:
+            return ""
+
+        # Convert to lowercase and remove common suffixes/prefixes
+        normalized = company_name.lower().strip()
+
+        # Remove common company suffixes
+        suffixes_to_remove = [
+            " ltd",
+            " llc",
+            " inc",
+            " corp",
+            " corporation",
+            " company",
+            " co",
+            " s.a.c",
+            " s.a",
+            " b.v",
+            " gmbh",
+            " ag",
+            " s.r.l",
+            " srl",
+            " limited",
+            " entertainment",
+            " gaming",
+            " games",
+            " casino",
+            " casinos",
+            " betting",
+            " bet",
+            " pay",
+            " payment",
+            " payments",
+        ]
+
+        for suffix in suffixes_to_remove:
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)].strip()
+
+        # Remove special characters but keep spaces and alphanumeric
+        import string
+
+        normalized = "".join(
+            c for c in normalized if c.isalnum() or c.isspace()
+        )
+
+        # Remove extra spaces
+        normalized = " ".join(normalized.split())
+
+        return normalized
+
+    def _calculate_similarity(self, str1: str, str2: str) -> float:
+        """Розраховує схожість між двома рядками використовуючи Levenshtein distance"""
+        if not str1 or not str2:
+            return 0.0
+
+        # Simple Levenshtein distance implementation
+        def levenshtein_distance(s1, s2):
+            if len(s1) < len(s2):
+                return levenshtein_distance(s2, s1)
+
+            if len(s2) == 0:
+                return len(s1)
+
+            previous_row = list(range(len(s2) + 1))
+            for i, c1 in enumerate(s1):
+                current_row = [i + 1]
+                for j, c2 in enumerate(s2):
+                    insertions = previous_row[j + 1] + 1
+                    deletions = current_row[j] + 1
+                    substitutions = previous_row[j] + (c1 != c2)
+                    current_row.append(
+                        min(insertions, deletions, substitutions)
+                    )
+                previous_row = current_row
+
+            return previous_row[-1]
+
+        distance = levenshtein_distance(str1, str2)
+        max_len = max(len(str1), len(str2))
+
+        if max_len == 0:
+            return 1.0
+
+        return 1.0 - (distance / max_len)
+
+    def _is_company_excluded(
+        self, company_name: str, similarity_threshold: float = 0.8
+    ) -> tuple:
+        """Перевіряє чи компанія знаходиться в списку виключень
+
+        Returns:
+            tuple: (is_excluded: bool, matched_company: str, similarity_score: float)
+        """
+        # Handle NaN or None values
+        if (
+            not company_name
+            or not self.excluded_companies
+            or str(company_name).lower() in ["nan", "none", ""]
+        ):
+            return False, "", 0.0
+
+        normalized_input = self._normalize_company_name(company_name)
+
+        best_match = ""
+        best_similarity = 0.0
+
+        for excluded_company in self.excluded_companies:
+            # Check exact match first
+            if normalized_input == excluded_company["normalized"]:
+                return True, excluded_company["original"], 1.0
+
+            # Check if one contains the other
+            if (
+                normalized_input in excluded_company["normalized"]
+                or excluded_company["normalized"] in normalized_input
+            ):
+
+                # Calculate similarity for containment
+                similarity = (
+                    max(
+                        len(normalized_input)
+                        / len(excluded_company["normalized"]),
+                        len(excluded_company["normalized"])
+                        / len(normalized_input),
+                    )
+                    if excluded_company["normalized"]
+                    else 0.0
+                )
+
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = excluded_company["original"]
+
+            # Calculate Levenshtein similarity
+            similarity = self._calculate_similarity(
+                normalized_input, excluded_company["normalized"]
+            )
+
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = excluded_company["original"]
+
+        # Return True if similarity is above threshold
+        is_excluded = best_similarity >= similarity_threshold
+        return is_excluded, best_match, best_similarity
+
+    def reload_excluded_companies(self):
+        """Перезавантажує список виключених компаній"""
+        self._load_excluded_companies()
+
+    def show_excluded_companies(self):
+        """Показує поточний список виключених компаній"""
+        print(f"\n🚫 СПИСОК ВИКЛЮЧЕНИХ КОМПАНІЙ")
+        print("=" * 40)
+
+        if not self.excluded_companies:
+            print("📋 Список виключених компаній порожній")
+            return
+
+        print(f"📊 Всього компаній у списку: {len(self.excluded_companies)}")
+        print("\n📋 Компанії:")
+
+        for i, company in enumerate(self.excluded_companies, 1):
+            original = company["original"]
+            normalized = company["normalized"]
+            print(f"   {i:3d}. {original}")
+            if original.lower() != normalized:
+                print(f"        → (нормалізовано: '{normalized}')")
+
+        print(f"\n💡 Файл виключень: data/Exclude list.csv")
+        print(f"🔄 Для оновлення змініть файл та перезапустіть програму")
+
+    def test_company_exclusion(self, company_name: str):
+        """Тестує чи компанія буде виключена"""
+        print(f"\n🧪 ТЕСТ ВИКЛЮЧЕННЯ КОМПАНІЇ")
+        print("=" * 40)
+        print(f"🏢 Тестуємо: '{company_name}'")
+
+        is_excluded, matched_company, similarity = self._is_company_excluded(
+            company_name
+        )
+
+        print(
+            f"📝 Нормалізовано до: '{self._normalize_company_name(company_name)}'"
+        )
+        print(
+            f"🎯 Результат: {'❌ ВИКЛЮЧЕНО' if is_excluded else '✅ ДОЗВОЛЕНО'}"
+        )
+
+        if matched_company:
+            print(f"🔍 Найкраще співпадіння: '{matched_company}'")
+            print(f"📊 Схожість: {similarity:.2%}")
+
+        if not is_excluded:
+            print(
+                "💡 Компанія НЕ в списку виключень, повідомлення будуть відправлені"
+            )
+        else:
+            print(
+                "🚫 Компанія в списку виключень, повідомлення НЕ будуть відправлені"
+            )
+
     def _validate_env_variables(self):
         """Валідує наявність обов'язкових environment variables"""
         required_vars = [
@@ -105,6 +359,9 @@ class SBCAttendeesScraper:
             ("MESSENGER2_USERNAME", settings.messenger2_username),
             ("MESSENGER2_PASSWORD", settings.messenger2_password),
             ("MESSENGER2_USER_ID", settings.messenger2_user_id),
+            ("MESSENGER3_USERNAME", settings.messenger3_username),
+            ("MESSENGER3_PASSWORD", settings.messenger3_password),
+            ("MESSENGER3_USER_ID", settings.messenger3_user_id),
         ]
 
         missing_vars = []
@@ -519,7 +776,11 @@ class SBCAttendeesScraper:
         return result is not None
 
     def send_message_to_user(
-        self, target_user_id: str, message: str, full_name: str = None
+        self,
+        target_user_id: str,
+        message: str,
+        full_name: str = None,
+        company_name: str = None,
     ) -> str:
         """Повний пайплайн відправки повідомлення користувачу з автоматичним follow-up
 
@@ -527,7 +788,27 @@ class SBCAttendeesScraper:
         - "success": сообщение успешно отправлено
         - "already_contacted": чат уже содержит сообщения, пропускаем
         - "failed": ошибка отправки
+        - "excluded_company": компания в списке исключений
         """
+        # 0. Перевіряємо чи компанія в списку виключень
+        if company_name:
+            is_excluded, matched_company, similarity = (
+                self._is_company_excluded(company_name)
+            )
+            if is_excluded:
+                print(f"       🚫 КОМПАНІЯ ВИКЛЮЧЕНА: '{company_name}'")
+                print(
+                    f"       📋 Співпадіння з: '{matched_company}' (схожість: {similarity:.2f})"
+                )
+                # Оновлюємо CSV з valid=false замість пропуску
+                if full_name:
+                    csv_file = os.path.join(
+                        self.get_data_dir(), "SBC - Attendees.csv"
+                    )
+                    self.update_csv_excluded_company(
+                        csv_file, target_user_id, full_name, company_name
+                    )
+                return "excluded_company"
         # 1. Перевіряємо чи є існуючий чат
         chat_id = self.find_chat_with_user(target_user_id)
 
@@ -540,8 +821,9 @@ class SBCAttendeesScraper:
                 print(f"       ⏭️ Чат вже містить повідомлення, пропускаємо")
                 # Обновляем CSV со статусом "Sent" так как контакт уже был обработан
                 if full_name:
-                    data_dir = "restricted/data"
-                    csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+                    csv_file = os.path.join(
+                        self.get_data_dir(), "SBC - Attendees.csv"
+                    )
                     self.update_csv_with_messaging_status(
                         csv_file, target_user_id, full_name, chat_id
                     )
@@ -577,8 +859,7 @@ class SBCAttendeesScraper:
 
         # 6. Оновлюємо CSV файл про відправлені повідомлення
         print(f"       📝 Оновлюємо CSV файл...")
-        data_dir = "restricted/data"
-        csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
         if full_name:
             self.update_csv_with_messaging_status(
                 csv_file, target_user_id, full_name, chat_id
@@ -783,8 +1064,7 @@ class SBCAttendeesScraper:
         print(f"📊 Знайдено {stats['total_chats']} чатів для аналізу")
 
         # Підготуємо шлях до CSV файлу для оновлення chat_id
-        data_dir = "restricted/data"
-        csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
 
         for i, chat in enumerate(chats_data, 1):
             chat_id = chat.get("chatId")
@@ -1176,8 +1456,7 @@ class SBCAttendeesScraper:
             return []
 
         if not csv_file:
-            data_dir = "restricted/data"
-            csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
 
         candidates = []
 
@@ -1364,8 +1643,7 @@ class SBCAttendeesScraper:
             f"📋 Знайдено {len(accessible_chat_ids)} доступних чатів для поточного акаунта"
         )
 
-        data_dir = "restricted/data"
-        csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
 
         for i, candidate in enumerate(candidates, 1):
             chat_id = candidate["chat_id"]
@@ -1482,8 +1760,7 @@ class SBCAttendeesScraper:
         print("=" * 50)
 
         # Load CSV data
-        data_dir = "restricted/data"
-        csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
 
         if not os.path.exists(csv_file):
             print(f"❌ Файл {csv_file} не знайдено")
@@ -1501,13 +1778,19 @@ class SBCAttendeesScraper:
             kiev_tz = ZoneInfo("Europe/Kiev")
             current_date = datetime.now(kiev_tz).date()
 
-            # Split data by author
-            daniil_data = df[df["author"] == "Daniil"].copy()
+            # Split data by author (including historical data)
+            daniil_data = df[
+                df["author"] == "Daniil"
+            ].copy()  # Historical data
+            anton_data = df[df["author"] == "Anton"].copy()  # New data
             yaroslav_data = df[df["author"] == "Yaroslav"].copy()
+            ihor_data = df[df["author"] == "Ihor"].copy()  # New data
 
             print(f"\n📊 Розподіл даних по авторам:")
-            print(f"  Daniil: {len(daniil_data)} записів")
+            print(f"  Daniil (історичні): {len(daniil_data)} записів")
+            print(f"  Anton (нові): {len(anton_data)} записів")
             print(f"  Yaroslav: {len(yaroslav_data)} записів")
+            print(f"  Ihor (нові): {len(ihor_data)} записів")
 
             total_stats = {
                 "total_candidates": 0,
@@ -1522,8 +1805,10 @@ class SBCAttendeesScraper:
 
             # Process each author's data separately
             for author_name, author_data in [
-                ("Daniil", daniil_data),
+                ("Daniil (історичні)", daniil_data),
+                ("Anton (нові)", anton_data),
                 ("Yaroslav", yaroslav_data),
+                ("Ihor (нові)", ihor_data),
             ]:
                 if author_data.empty:
                     print(f"\n⏭️ Немає даних для {author_name}, пропускаємо...")
@@ -1532,16 +1817,22 @@ class SBCAttendeesScraper:
                 print(f"\n🔄 Обробляємо дані для {author_name}...")
 
                 # Switch to appropriate account
-                if author_name == "Daniil":
+                if author_name in ["Daniil (історичні)", "Anton (нові)"]:
                     if not self.switch_account("messenger1"):
                         print(
                             f"❌ Не вдалося переключитися на аккаунт messenger1"
                         )
                         continue
-                else:  # Yaroslav
+                elif author_name == "Yaroslav":
                     if not self.switch_account("messenger2"):
                         print(
                             f"❌ Не вдалося переключитися на аккаунт messenger2"
+                        )
+                        continue
+                else:  # Ihor (нові)
+                    if not self.switch_account("messenger3"):
+                        print(
+                            f"❌ Не вдалося переключитися на аккаунт messenger3"
                         )
                         continue
 
@@ -1786,11 +2077,13 @@ class SBCAttendeesScraper:
                         f"   Колонка 'Follow-up' не знайдена, пропускаємо фільтр"
                     )
 
-                # 3. Фільтр по порожньому полю 'valid' (якщо колонка існує)
+                # 3. Фільтр по полю 'valid' - виключаємо записи з valid="false"
                 if "valid" in df.columns:
-                    df = df[df["valid"].isna() | (df["valid"] == "")]
+                    before_valid_filter = len(df)
+                    df = df[df["valid"] != "false"]
+                    excluded_by_valid = before_valid_filter - len(df)
                     print(
-                        f"   Після фільтру 'valid' (порожнє): {len(df)} записів"
+                        f"   Після фільтру 'valid' (виключено invalid): {len(df)} записів (-{excluded_by_valid} invalid)"
                     )
                 else:
                     print(
@@ -1868,6 +2161,7 @@ class SBCAttendeesScraper:
             for _, row in df.iterrows():
                 source_url = row.get("source_url", "")
                 full_name = row.get("full_name", "")
+                company_name = row.get("company_name", "")
 
                 if source_url and full_name:
                     # Витягуємо user ID з URL
@@ -1887,6 +2181,7 @@ class SBCAttendeesScraper:
                                 "user_id": user_id,
                                 "first_name": first_name,
                                 "full_name": full_name,
+                                "company_name": company_name,
                             }
                         )
 
@@ -1912,6 +2207,11 @@ class SBCAttendeesScraper:
 
                     source_url_idx = headers.index("source_url")
                     full_name_idx = headers.index("full_name")
+                    company_name_idx = (
+                        headers.index("company_name")
+                        if "company_name" in headers
+                        else -1
+                    )
 
                     line_num = 1
                     for line in f:
@@ -1925,14 +2225,22 @@ class SBCAttendeesScraper:
                             fields = line.split(",")
 
                             # Перевіряємо чи достатньо полів
-                            if len(fields) > max(
-                                source_url_idx, full_name_idx
-                            ):
+                            max_idx = max(source_url_idx, full_name_idx)
+                            if company_name_idx > -1:
+                                max_idx = max(max_idx, company_name_idx)
+
+                            if len(fields) > max_idx:
                                 source_url = (
                                     fields[source_url_idx].strip().strip('"')
                                 )
                                 full_name = (
                                     fields[full_name_idx].strip().strip('"')
+                                )
+                                company_name = (
+                                    fields[company_name_idx].strip().strip('"')
+                                    if company_name_idx > -1
+                                    and len(fields) > company_name_idx
+                                    else ""
                                 )
 
                                 if source_url and full_name:
@@ -1955,6 +2263,7 @@ class SBCAttendeesScraper:
                                                 "user_id": user_id,
                                                 "first_name": first_name,
                                                 "full_name": full_name,
+                                                "company_name": company_name,
                                             }
                                         )
                         except Exception as line_error:
@@ -2098,9 +2407,11 @@ class SBCAttendeesScraper:
             if mask.any():
                 # Визначаємо автора на основі поточного акаунта
                 if self.current_account == "messenger1":
-                    author = "Daniil"
+                    author = "Anton"
                 elif self.current_account == "messenger2":
                     author = "Yaroslav"
+                elif self.current_account == "messenger3":
+                    author = "Ihor"
                 else:
                     author = "System"
 
@@ -2110,8 +2421,8 @@ class SBCAttendeesScraper:
 
                 # Оновлюємо поля
                 df.loc[mask, "connected"] = "Sent"
-                df.loc[mask, "Comment"] = (
-                    author  # Використовуємо Comment як author field
+                df.loc[mask, "author"] = (
+                    author  # Правильно встановлюємо author в author field
                 )
                 df.loc[mask, "Date"] = current_date
 
@@ -2125,6 +2436,56 @@ class SBCAttendeesScraper:
                 chat_info = f", chat_id={chat_id}" if chat_id else ""
                 print(
                     f"       📝 CSV оновлено: connected=Sent, author={author}, date={current_date}{chat_info}"
+                )
+            else:
+                print(
+                    f"       ⚠️ Не знайдено запис для user_id {user_id} у CSV"
+                )
+
+        except ImportError:
+            print(f"       ⚠️ pandas не встановлено, CSV не оновлено")
+        except Exception as e:
+            print(f"       ❌ Помилка оновлення CSV: {e}")
+
+    def update_csv_excluded_company(
+        self, csv_file: str, user_id: str, full_name: str, company_name: str
+    ):
+        """Оновлює CSV файл для виключених компаній, встановлюючи valid=false"""
+        try:
+            import pandas as pd
+            from zoneinfo import ZoneInfo
+
+            df = pd.read_csv(csv_file)
+
+            # Знаходимо запис за user_id (витягуємо з source_url)
+            mask = df["source_url"].str.contains(user_id, na=False)
+
+            if mask.any():
+                # Визначаємо автора на основі поточного акаунта
+                if self.current_account == "messenger1":
+                    author = "Anton"
+                elif self.current_account == "messenger2":
+                    author = "Yaroslav"
+                elif self.current_account == "messenger3":
+                    author = "Ihor"
+                else:
+                    author = "System"
+
+                # Отримуємо поточну дату у форматі d.mm за київським часом
+                kyiv_tz = ZoneInfo("Europe/Kiev")
+                current_date = datetime.now(kyiv_tz).strftime("%-d.%m")
+
+                # Оновлюємо поля для виключеної компанії
+                df.loc[mask, "connected"] = "Excluded"
+                df.loc[mask, "valid"] = "false"  # Встановлюємо як невалідний
+                df.loc[mask, "Comment"] = f"Excluded company: {company_name}"
+                df.loc[mask, "Date"] = current_date
+
+                # Зберігаємо оновлений файл
+                df.to_csv(csv_file, index=False, encoding="utf-8")
+
+                print(
+                    f"       📝 CSV оновлено: connected=Excluded, valid=false, company={company_name}"
                 )
             else:
                 print(
@@ -2419,52 +2780,97 @@ class SBCAttendeesScraper:
     def check_all_responses_and_update_csv(
         self, csv_file: str = None
     ) -> Dict[str, int]:
-        """Перевіряє всі чати з усіх акаунтів на предмет відповідей та оновлює CSV статус"""
+        """Перевіряє всі чати з усіх акаунтів на предмет відповідей та оновлює CSV статус
+        Оптимізована версія - перевіряє тільки чати для контактів зі статусом Sent/Empty/True
+        """
         if not csv_file:
-            data_dir = "restricted/data"
-            csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
 
         if not PANDAS_AVAILABLE:
             print("❌ pandas не встановлено, не можемо обробити CSV")
             return {"error": 1}
 
-        print(f"\n📬 ПЕРЕВІРКА ВІДПОВІДЕЙ У ВСІХ ЧАТАХ")
+        print(f"\n📬 ОПТИМІЗОВАНА ПЕРЕВІРКА ВІДПОВІДЕЙ У ЧАТАХ")
         print(f"📁 CSV файл: {csv_file}")
         print("=" * 60)
 
         stats = {
             "total_accounts": 0,
+            "total_chats_to_check": 0,
             "total_chats_checked": 0,
             "responses_found": 0,
             "csv_updated": 0,
             "errors": 0,
-            "skipped_group_chats": 0,
+            "skipped_no_csv_match": 0,
+            "skipped_already_answered": 0,
             "accounts_processed": [],
         }
 
         # Список messenger акаунтів для перевірки
-        messenger_accounts = ["messenger1", "messenger2"]
+        messenger_accounts = ["messenger1", "messenger2", "messenger3"]
         original_account = self.current_account
 
         try:
-            # Читаємо CSV файл з записами зі статусом "Sent"
+            # Читаємо CSV файл
             if not os.path.exists(csv_file):
                 print(f"❌ Файл {csv_file} не знайдено")
                 return {"error": 1}
 
             df = pd.read_csv(csv_file)
 
-            # Фільтруємо записи зі статусом "Sent"
-            sent_mask = df["connected"] == "Sent"
-            sent_records = df[sent_mask]
-
-            print(
-                f"📊 Знайдено {len(sent_records)} записів зі статусом 'Sent'"
+            # Фільтруємо записи які потребують перевірки
+            # Шукаємо записи зі статусом "Sent", порожнім значенням, або "True" (але НЕ "Sent Answer" або будь-що з "answer")
+            check_mask = (
+                (
+                    (df["connected"] == "Sent")
+                    | (df["connected"].isna())
+                    | (df["connected"] == "")
+                    | (df["connected"] == "True")
+                )
+                & (
+                    # Виключаємо тих, хто вже має відповідь (будь-яке значення що містить "answer")
+                    (
+                        ~df["connected"].str.contains(
+                            "answer", case=False, na=False
+                        )
+                    )
+                )
+                & (
+                    # І тих, у кого є chat_id (означає що контакт був встановлений)
+                    (df["chat_id"].notna())
+                    & (df["chat_id"] != "")
+                )
             )
 
-            if len(sent_records) == 0:
+            records_to_check = df[check_mask]
+
+            print(f"📊 Статистика CSV записів:")
+            print(f"   📋 Всього записів: {len(df)}")
+            print(f"   � До перевірки: {len(records_to_check)}")
+            print(
+                f"   ✅ Вже з відповідями: {len(df[df['connected'].str.contains('answer', case=False, na=False)])}"
+            )
+
+            if len(records_to_check) == 0:
                 print("✅ Немає записів для перевірки")
                 return stats
+
+            # Створюємо мапу chat_id -> record для швидкого пошуку
+            chat_id_to_record = {}
+            for _, record in records_to_check.iterrows():
+                chat_id = record.get("chat_id")
+                if chat_id and str(chat_id) != "nan":
+                    chat_id_to_record[chat_id] = {
+                        "full_name": record.get("full_name", ""),
+                        "user_id": record.get("user_id", ""),
+                        "connected": record.get("connected", ""),
+                        "index": record.name,
+                    }
+
+            print(
+                f"📋 Підготовлено {len(chat_id_to_record)} chat_id для перевірки"
+            )
+            stats["total_chats_to_check"] = len(chat_id_to_record)
 
             # Перевіряємо кожен messenger акаунт
             for account_key in messenger_accounts:
@@ -2495,21 +2901,28 @@ class SBCAttendeesScraper:
                     stats["errors"] += 1
                     continue
 
-                print(f"📋 Знайдено {len(chats_data)} чатів")
-
-                # Перевіряємо кожен чат
-                for i, chat in enumerate(chats_data, 1):
+                # Фільтруємо тільки ті чати, які є в нашому CSV
+                relevant_chats = []
+                for chat in chats_data:
                     chat_id = chat.get("chatId")
-                    if not chat_id:
-                        continue
+                    if (
+                        chat_id
+                        and chat_id in chat_id_to_record
+                        and chat.get("isSingleChat")
+                    ):
+                        relevant_chats.append(chat)
 
-                    # Пропускаємо групові чати
-                    if not chat.get("isSingleChat"):
-                        stats["skipped_group_chats"] += 1
-                        continue
+                print(
+                    f"📋 З {len(chats_data)} чатів, {len(relevant_chats)} потребують перевірки"
+                )
+
+                # Перевіряємо тільки релевантні чати
+                for i, chat in enumerate(relevant_chats, 1):
+                    chat_id = chat.get("chatId")
+                    record_info = chat_id_to_record[chat_id]
 
                     print(
-                        f"   [{i}/{len(chats_data)}] Перевіряємо чат {chat_id[:8]}..."
+                        f"   [{i}/{len(relevant_chats)}] 👤 {record_info['full_name'][:30]}... (chat: {chat_id[:8]}...)"
                     )
 
                     # Додаємо випадкову затримку
@@ -2530,13 +2943,12 @@ class SBCAttendeesScraper:
 
                         if analysis["has_response"]:
                             stats["responses_found"] += 1
-                            participant_name = analysis.get(
-                                "participant_name", ""
-                            )
-                            participant_id = analysis.get("participant_id", "")
+                            participant_name = record_info["full_name"]
+                            participant_id = record_info["user_id"]
 
+                            print(f"       ✅ Знайдено відповідь! 🎉")
                             print(
-                                f"       ✅ Знайдено відповідь від {participant_name}"
+                                f"       📅 Кількість відповідей: {analysis['response_count']}"
                             )
 
                             # Оновлюємо CSV статус
@@ -2548,9 +2960,13 @@ class SBCAttendeesScraper:
                                 participant_id,
                             ):
                                 stats["csv_updated"] += 1
-                                print(f"       📝 CSV оновлено")
+                                print(
+                                    f"       📝 CSV оновлено: статус -> 'Sent Answer'"
+                                )
                             else:
                                 print(f"       ⚠️ Не вдалося оновити CSV")
+                        else:
+                            print(f"       📭 Відповіді поки що немає")
 
                     except Exception as e:
                         print(f"       ❌ Помилка обробки чату: {e}")
@@ -2568,14 +2984,30 @@ class SBCAttendeesScraper:
             stats["errors"] += 1
 
         # Виводимо підсумки
-        print(f"\n📊 ПІДСУМКИ ПЕРЕВІРКИ ВІДПОВІДЕЙ:")
+        print(f"\n📊 ПІДСУМКИ ОПТИМІЗОВАНОЇ ПЕРЕВІРКИ ВІДПОВІДЕЙ:")
         print(f"   👥 Акаунтів перевірено: {stats['total_accounts']}")
-        print(f"   📬 Чатів перевірено: {stats['total_chats_checked']}")
+        print(f"   🎯 Чатів для перевірки: {stats['total_chats_to_check']}")
+        print(
+            f"   📬 Чатів фактично перевірено: {stats['total_chats_checked']}"
+        )
         print(f"   ✅ Відповідей знайдено: {stats['responses_found']}")
         print(f"   📝 CSV записів оновлено: {stats['csv_updated']}")
-        print(f"   ⏭️ Групових чатів пропущено: {stats['skipped_group_chats']}")
+        print(f"   ⏭️ Пропущено (немає в CSV): {stats['skipped_no_csv_match']}")
+        print(
+            f"   ✅ Пропущено (вже відповів): {stats['skipped_already_answered']}"
+        )
         print(f"   ❌ Помилок: {stats['errors']}")
         print(f"   🔧 Акаунти: {', '.join(stats['accounts_processed'])}")
+
+        efficiency_rate = (
+            (
+                (stats["total_chats_checked"] / stats["total_chats_to_check"])
+                * 100
+            )
+            if stats["total_chats_to_check"] > 0
+            else 0
+        )
+        print(f"   📈 Ефективність фільтрації: {efficiency_rate:.1f}%")
 
         return stats
 
@@ -2706,8 +3138,9 @@ class SBCAttendeesScraper:
         user_limit: int = None,
         enable_position_filter: bool = True,
     ):
-        """Відправляє повідомлення всім користувачам з CSV файлу"""
+        """Відправляє повідомлення всім користувачам з CSV файлу з перевіркою виключених компаній"""
         print(f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З ФАЙЛУ: {csv_file}")
+        print(f"🚫 Виключено компаній: {len(self.excluded_companies)}")
 
         # Завантажуємо існуючі чати
         print("📥 Завантажуємо існуючі чати...")
@@ -2736,14 +3169,17 @@ class SBCAttendeesScraper:
         success_count = 0
         failed_count = 0
         skipped_count = 0
+        excluded_count = 0
 
         for i, user_info in enumerate(user_data, 1):
             user_id = user_info["user_id"]
             first_name = user_info["first_name"]
             full_name = user_info["full_name"]
+            company_name = user_info.get("company_name", "")
 
+            company_info = f" ({company_name})" if company_name else ""
             print(
-                f"\n[{i}/{len(user_data)}] Обробляємо {full_name} (ID: {user_id})..."
+                f"\n[{i}/{len(user_data)}] Обробляємо {full_name}{company_info} (ID: {user_id})..."
             )
 
             try:
@@ -2760,16 +3196,18 @@ class SBCAttendeesScraper:
 
                 # Відправляємо повідомлення (з автоматичним follow-up та перевіркою чату)
                 success = self.send_message_to_user(
-                    user_id, message, full_name
+                    user_id, message, full_name, company_name
                 )
 
-                if success:
+                if success == "success":
                     print(f"   ✅ Повідомлення відправлено")
                     success_count += 1
-                elif success is False:
-                    # Якщо повертається False, це означає що чат має повідомлення і ми пропускаємо
+                elif success == "already_contacted":
                     print(f"   ⏭️ Пропущено (чат вже має повідомлення)")
                     skipped_count += 1
+                elif success == "excluded_company":
+                    print(f"   🚫 Пропущено (компанія виключена)")
+                    excluded_count += 1
                 else:
                     print(f"   ❌ Помилка відправки")
                     failed_count += 1
@@ -2785,7 +3223,8 @@ class SBCAttendeesScraper:
 
         print(f"\n📊 ПІДСУМОК РОЗСИЛКИ:")
         print(f"   ✅ Успішно: {success_count}")
-        print(f"   ⏭️ Пропущено: {skipped_count}")
+        print(f"   ⏭️ Пропущено (чат існує): {skipped_count}")
+        print(f"   🚫 Виключено (компанія): {excluded_count}")
         print(f"   ❌ Помилок: {failed_count}")
         print(
             f"   📈 Успішність: {(success_count/(success_count+failed_count)*100):.1f}%"
@@ -2802,9 +3241,9 @@ class SBCAttendeesScraper:
         user_limit: int = None,
         enable_position_filter: bool = True,
     ):
-        """Відправляє повідомлення з CSV файлу розподіляючи дані між двома messenger акаунтами"""
+        """Відправляє повідомлення з CSV файлу розподіляючи дані між трьома messenger акаунтами"""
         print(
-            f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З ДВОХ MESSENGER АКАУНТІВ: {csv_file}"
+            f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З ТРЬОХ MESSENGER АКАУНТІВ: {csv_file}"
         )
 
         # Витягуємо дані користувачів з CSV
@@ -2833,10 +3272,14 @@ class SBCAttendeesScraper:
                     f"🔢 Застосовано ліміт: оброблятимемо {user_limit} з {original_count} доступних користувачів"
                 )
 
-        # Розділяємо дані навпіл між messenger акаунтами
-        mid_point = len(user_data) // 2
-        messenger1_data = user_data[:mid_point]
-        messenger2_data = user_data[mid_point:]
+        # Розділяємо дані між трьома messenger акаунтами
+        total_users = len(user_data)
+        third_point = total_users // 3
+        two_thirds_point = (total_users * 2) // 3
+
+        messenger1_data = user_data[:third_point]
+        messenger2_data = user_data[third_point:two_thirds_point]
+        messenger3_data = user_data[two_thirds_point:]
 
         print(f"📊 Розподіл контактів:")
         print(
@@ -2844,6 +3287,9 @@ class SBCAttendeesScraper:
         )
         print(
             f"   👤 Messenger2 ({self.accounts['messenger2']['name']}): {len(messenger2_data)} контактів"
+        )
+        print(
+            f"   👤 Messenger3 ({self.accounts['messenger3']['name']}): {len(messenger3_data)} контактів"
         )
 
         total_success = 0
@@ -2873,6 +3319,127 @@ class SBCAttendeesScraper:
             )
             total_success += success
             total_failed += failed
+
+        # Обробляємо третім messenger акаунтом
+        if messenger3_data:
+            print(f"\n🔄 Переключаємося на Messenger3...")
+            self.switch_account("messenger3")
+
+            # Додаткова затримка після переключення акаунтів
+            print(f"   ⏱️ Чекаємо 5 секунд після переключення акаунта...")
+            time.sleep(5)
+
+            success, failed = self._process_user_batch(
+                messenger3_data, delay_seconds, "Messenger3"
+            )
+            total_success += success
+            total_failed += failed
+
+        print(f"\n📊 ЗАГАЛЬНИЙ ПІДСУМОК:")
+        print(f"   ✅ Успішно: {total_success}")
+        print(f"   ❌ Помилок: {total_failed}")
+        print(
+            f"   📈 Успішність: {(total_success/(total_success+total_failed)*100):.1f}%"
+            if (total_success + total_failed) > 0
+            else "N/A"
+        )
+
+        return total_success, total_failed
+
+    def bulk_message_custom_accounts(
+        self,
+        csv_file: str,
+        selected_accounts: list,
+        delay_seconds: int = 3,
+        user_limit: int = None,
+        enable_position_filter: bool = True,
+    ):
+        """Відправляє повідомлення з CSV файлу розподіляючи дані між вибраними messenger акаунтами"""
+        print(
+            f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З ВИБРАНИХ MESSENGER АКАУНТІВ: {csv_file}"
+        )
+
+        account_names = [
+            self.accounts[acc]["name"] for acc in selected_accounts
+        ]
+        print(f"🎯 Вибрані акаунти: {', '.join(account_names)}")
+
+        # Витягуємо дані користувачів з CSV
+        user_data = self.extract_user_data_from_csv(
+            csv_file,
+            apply_filters=True,
+            enable_position_filter=enable_position_filter,
+        )
+
+        if not user_data:
+            print("❌ Не знайдено користувачів для обробки")
+            return 0, 0
+
+        # Застосовуємо ліміт користувачів якщо вказано
+        if user_limit and user_limit > 0:
+            if len(user_data) > user_limit:
+                user_data = user_data[:user_limit]
+                original_count = len(
+                    self.extract_user_data_from_csv(
+                        csv_file,
+                        apply_filters=True,
+                        enable_position_filter=enable_position_filter,
+                    )
+                )
+                print(
+                    f"🔢 Застосовано ліміт: оброблятимемо {user_limit} з {original_count} доступних користувачів"
+                )
+
+        # Розділяємо дані між вибраними messenger акаунтами
+        total_users = len(user_data)
+        num_accounts = len(selected_accounts)
+
+        # Создаем батчи для каждого аккаунта
+        user_batches = []
+        users_per_batch = total_users // num_accounts
+        remainder = total_users % num_accounts
+
+        start_idx = 0
+        for i, account_key in enumerate(selected_accounts):
+            # Добавляем по одному дополнительному пользователю к первым remainder батчам
+            batch_size = users_per_batch + (1 if i < remainder else 0)
+            end_idx = start_idx + batch_size
+            batch_data = user_data[start_idx:end_idx]
+            user_batches.append((account_key, batch_data))
+            start_idx = end_idx
+
+        print(f"📊 Розподіл контактів:")
+        for account_key, batch_data in user_batches:
+            account_name = self.accounts[account_key]["name"]
+            print(
+                f"   👤 {account_key} ({account_name}): {len(batch_data)} контактів"
+            )
+
+        total_success = 0
+        total_failed = 0
+
+        # Обробляємо кожним вибраним акаунтом
+        for i, (account_key, batch_data) in enumerate(user_batches):
+            if batch_data:
+                print(f"\n🔄 Переключаємося на {account_key}...")
+                self.switch_account(account_key)
+
+                if (
+                    i > 0
+                ):  # Додаткова затримка після переключення акаунтів (крім першого)
+                    print(
+                        f"   ⏱️ Чекаємо 5 секунд після переключення акаунта..."
+                    )
+                    time.sleep(5)
+
+                account_name = self.accounts[account_key]["name"].replace(
+                    "Messenger Account ", "Messenger"
+                )
+                success, failed = self._process_user_batch(
+                    batch_data, delay_seconds, account_name
+                )
+                total_success += success
+                total_failed += failed
 
         print(f"\n📊 ЗАГАЛЬНИЙ ПІДСУМОК:")
         print(f"   ✅ Успішно: {total_success}")
@@ -2915,7 +3482,7 @@ class SBCAttendeesScraper:
             return False
 
     def _process_user_batch(self, user_data, delay_seconds, account_name):
-        """Обробляє групу користувачів для одного акаунта"""
+        """Обробляє групу користувачів для одного акаунта з перевіркою виключених компаній"""
         print(f"\n📬 Обробка {len(user_data)} контактів для {account_name}")
 
         # Завантажуємо існуючі чати для поточного акаунта
@@ -2925,14 +3492,17 @@ class SBCAttendeesScraper:
         success_count = 0
         failed_count = 0
         skipped_count = 0
+        excluded_count = 0
 
         for i, user_info in enumerate(user_data, 1):
             user_id = user_info["user_id"]
             first_name = user_info["first_name"]
             full_name = user_info["full_name"]
+            company_name = user_info.get("company_name", "")
 
+            company_info = f" ({company_name})" if company_name else ""
             print(
-                f"\n[{i}/{len(user_data)}] Обробляємо {full_name} (ID: {user_id})..."
+                f"\n[{i}/{len(user_data)}] Обробляємо {full_name}{company_info} (ID: {user_id})..."
             )
 
             try:
@@ -2949,16 +3519,18 @@ class SBCAttendeesScraper:
 
                 # Відправляємо повідомлення (з автоматичним follow-up та перевіркою чату)
                 success = self.send_message_to_user(
-                    user_id, message, full_name
+                    user_id, message, full_name, company_name
                 )
 
-                if success:
+                if success == "success":
                     print(f"   ✅ Повідомлення відправлено")
                     success_count += 1
-                elif success is False:
-                    # Якщо повертається False, це означає що чат має повідомлення і ми пропускаємо
+                elif success == "already_contacted":
                     print(f"   ⏭️ Пропущено (чат вже має повідомлення)")
                     skipped_count += 1
+                elif success == "excluded_company":
+                    print(f"   🚫 Пропущено (компанія виключена)")
+                    excluded_count += 1
                 else:
                     print(f"   ❌ Помилка відправки")
                     failed_count += 1
@@ -2974,13 +3546,82 @@ class SBCAttendeesScraper:
 
         print(f"\n📊 ПІДСУМОК для {account_name}:")
         print(f"   ✅ Успішно: {success_count}")
-        print(f"   ⏭️ Пропущено: {skipped_count}")
+        print(f"   ⏭️ Пропущено (чат існує): {skipped_count}")
+        print(f"   🚫 Виключено (компанія): {excluded_count}")
         print(f"   ❌ Помилок: {failed_count}")
 
         return success_count, failed_count
 
-    def load_existing_attendees(self, csv_file="SBC - Attendees.csv"):
+    def bulk_message_single_account(
+        self,
+        csv_file: str,
+        account_key: str,
+        delay_seconds: int = 3,
+        user_limit: int = None,
+        enable_position_filter: bool = True,
+    ):
+        """Відправляє повідомлення з CSV файлу використовуючи лише один messenger акаунт"""
+        print(
+            f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З ОДНОГО MESSENGER АКАУНТА ({self.accounts[account_key]['name']}): {csv_file}"
+        )
+
+        # Витягуємо дані користувачів з CSV
+        user_data = self.extract_user_data_from_csv(
+            csv_file,
+            apply_filters=True,
+            enable_position_filter=enable_position_filter,
+        )
+
+        if not user_data:
+            print("❌ Не знайдено користувачів для обробки")
+            return 0, 0
+
+        # Застосовуємо ліміт користувачів якщо вказано
+        if user_limit and user_limit > 0:
+            if len(user_data) > user_limit:
+                user_data = user_data[:user_limit]
+                original_count = len(
+                    self.extract_user_data_from_csv(
+                        csv_file,
+                        apply_filters=True,
+                        enable_position_filter=enable_position_filter,
+                    )
+                )
+                print(
+                    f"🔢 Застосовано ліміт: оброблятимемо {user_limit} з {original_count} доступних користувачів"
+                )
+
+        print(f"📊 Інформація про розсилку:")
+        print(f"   👤 Акаунт: {self.accounts[account_key]['name']}")
+        print(f"   📧 Контактів: {len(user_data)}")
+
+        # Переключаємося на вказаний акаунт
+        print(f"\n🔄 Переключаємося на {account_key}...")
+        if not self.switch_account(account_key):
+            print(f"❌ Помилка переключення на акаунт {account_key}")
+            return 0, 0
+
+        # Обробляємо всіх користувачів одним акаунтом
+        success, failed = self._process_user_batch(
+            user_data, delay_seconds, f"Single {account_key}"
+        )
+
+        print(f"\n📊 ПІДСУМОК РОЗСИЛКИ:")
+        print(f"   ✅ Успішно: {success}")
+        print(f"   ❌ Помилок: {failed}")
+        print(
+            f"   📈 Успішність: {(success/(success+failed)*100):.1f}%"
+            if (success + failed) > 0
+            else "N/A"
+        )
+
+        return success, failed
+
+    def load_existing_attendees(self, csv_file=None):
         """Завантажує існуючі записи з CSV"""
+        if csv_file is None:
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+
         existing = set()
 
         if not os.path.exists(csv_file):
@@ -3087,10 +3728,11 @@ class SBCAttendeesScraper:
                 "profile_image_url": attendee_details.get("photoUrl", ""),
             }
 
-    def save_new_attendees(
-        self, new_attendees_data, csv_file="SBC - Attendees.csv"
-    ):
+    def save_new_attendees(self, new_attendees_data, csv_file=None):
         """Додає нових учасників до CSV файлу"""
+        if csv_file is None:
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+
         file_exists = os.path.exists(csv_file)
 
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
@@ -3210,18 +3852,21 @@ class SBCAttendeesScraper:
 
         return detailed_data
 
-    def run_update(self, csv_file="SBC - Attendees.csv"):
+    def run_update(self, csv_file=None):
         """Основний метод для оновлення бази"""
+        if csv_file is None:
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+
         print("\n" + "=" * 60)
         print("🔄 ОНОВЛЕННЯ БАЗИ УЧАСНИКІВ SBC SUMMIT 2025")
         print("=" * 60)
 
         # Create data directory if it doesn't exist
-        data_dir = "restricted/data"
+        data_dir = self.get_data_dir()
         os.makedirs(data_dir, exist_ok=True)
 
         # Update csv_file path to include data directory
-        csv_file_path = os.path.join(data_dir, csv_file)
+        csv_file_path = csv_file
 
         # 1. Отримуємо всі результати advanced search
         print("\n📡 Етап 1: Завантаження даних з advanced search...")
@@ -3322,12 +3967,15 @@ class SBCAttendeesScraper:
             print(
                 "3. 📞 Follow-up campaigns (track responses & send follow-ups)"
             )
-            print("4. � Check for responses and update CSV status")
-            print("5. �🔄 Update existing CSV with contacts")
-            print("6. 🚪 Exit")
+            print("4. 📬 Check for responses and update CSV status")
+            print("5. � Update existing CSV with contacts")
+            print("6. 🚫 Manage excluded companies")
+            print("7. � Account status")
+            print("8. �🚪 Exit")
             print("=" * 60)
+            print(f"🚫 Excluded companies: {len(self.excluded_companies)}")
 
-            choice = input("➡️ Choose an action (1-6): ").strip()
+            choice = input("➡️ Choose an action (1-8): ").strip()
 
             if choice == "1":
                 self.handle_scrape_contacts()
@@ -3340,10 +3988,14 @@ class SBCAttendeesScraper:
             elif choice == "5":
                 self.handle_update_csv_contacts()
             elif choice == "6":
+                self.handle_excluded_companies()
+            elif choice == "7":
+                self.show_account_status()
+            elif choice == "8":
                 print("👋 Goodbye!")
                 break
             else:
-                print("❌ Invalid choice. Please select 1, 2, 3, 4, 5, or 6.")
+                print("❌ Invalid choice. Please select 1-8.")
 
     def handle_scrape_contacts(self):
         """Обробляє скрейпінг нових контактів"""
@@ -3357,26 +4009,137 @@ class SBCAttendeesScraper:
 
         confirm = input("Start scraping new attendees? (y/n): ").lower()
         if confirm == "y":
-            self.run_update("SBC - Attendees.csv")
+            self.run_update()
         else:
             print("❌ Scraping cancelled")
 
     def handle_multi_account_messages(self):
-        """Обробляє відправку повідомлень з використанням двох messenger акаунтів"""
-        print("\n👥 SEND MESSAGES WITH MULTI-ACCOUNT")
+        """Обробляє відправку повідомлень з використанням одного або двох messenger акаунтів"""
+        print("\n👥 SEND MESSAGES - ACCOUNT SELECTION")
         print("=" * 40)
 
+        # Получаем список всех messenger аккаунтов
+        messenger_accounts = []
+        for account_key, account_info in self.accounts.items():
+            if (
+                account_info["role"] == "messaging"
+                and account_info["username"]
+            ):
+                messenger_accounts.append(account_key)
+
+        if not messenger_accounts:
+            print("❌ No messenger accounts configured!")
+            return
+
         # Показуємо конфігурацію messenger акаунтів
-        print("🔧 Messenger accounts configuration:")
+        print("🔧 Available messenger accounts:")
+        for i, account_key in enumerate(messenger_accounts, 1):
+            account_info = self.accounts[account_key]
+            print(
+                f"   {i}. {account_key}: {account_info['name']} ({account_info['username']})"
+            )
+
+        # Вибір режиму роботи
+        print("\n📋 Режим розсилки:")
+        for i, account_key in enumerate(messenger_accounts, 1):
+            print(f"   {i}. 👤 Один акаунт ({account_key})")
+
+        # Если есть больше одного аккаунта, добавляем опции для мульти-аккаунт режима
+        if len(messenger_accounts) > 1:
+            print(f"   A. 👥 Всі акаунти (розподіл порівну)")
+            print(
+                f"   C. 🎯 Вибрати конкретні акаунти (наприклад: 1,3 або 2,3)"
+            )
+
         print(
-            f"   messenger1: {self.accounts['messenger1']['name']} ({self.accounts['messenger1']['username']})"
+            f"\n💡 Для одного акаунта введіть номер (1-{len(messenger_accounts)})"
         )
-        print(
-            f"   messenger2: {self.accounts['messenger2']['name']} ({self.accounts['messenger2']['username']})"
-        )
+        if len(messenger_accounts) > 1:
+            print(f"💡 Для всіх акаунтів введіть 'A'")
+            print(
+                f"� Для конкретних акаунтів введіть 'C' або номери через кому (наприклад: '1,3')"
+            )
+
+        mode_choice = input("➡️ Ваш вибір: ").strip().upper()
+
+        # Обработка выбора
+        selected_accounts = []
+        selected_mode = ""
+
+        if mode_choice == "A" and len(messenger_accounts) > 1:
+            # Все аккаунты
+            selected_accounts = messenger_accounts
+            selected_mode = "multi_messenger"
+        elif mode_choice == "C" and len(messenger_accounts) > 1:
+            # Запрос конкретных аккаунтов
+            account_choice = input(
+                f"➡️ Введіть номери акаунтів через кому (1-{len(messenger_accounts)}): "
+            ).strip()
+            try:
+                account_numbers = [
+                    int(x.strip()) for x in account_choice.split(",")
+                ]
+                if all(
+                    1 <= num <= len(messenger_accounts)
+                    for num in account_numbers
+                ):
+                    selected_accounts = [
+                        messenger_accounts[num - 1] for num in account_numbers
+                    ]
+                    selected_mode = (
+                        "custom_multi"
+                        if len(selected_accounts) > 1
+                        else f"single_{selected_accounts[0]}"
+                    )
+                else:
+                    print("❌ Невірні номери акаунтів. Операція скасована.")
+                    return
+            except ValueError:
+                print(
+                    "❌ Невірний формат. Використовуйте номери через кому (наприклад: 1,3). Операція скасована."
+                )
+                return
+        elif "," in mode_choice:
+            # Прямий ввод номерів через запятую
+            try:
+                account_numbers = [
+                    int(x.strip()) for x in mode_choice.split(",")
+                ]
+                if all(
+                    1 <= num <= len(messenger_accounts)
+                    for num in account_numbers
+                ):
+                    selected_accounts = [
+                        messenger_accounts[num - 1] for num in account_numbers
+                    ]
+                    selected_mode = (
+                        "custom_multi"
+                        if len(selected_accounts) > 1
+                        else f"single_{selected_accounts[0]}"
+                    )
+                else:
+                    print("❌ Невірні номери акаунтів. Операція скасована.")
+                    return
+            except ValueError:
+                print(
+                    "❌ Невірний формат. Використовуйте номери через кому (наприклад: 1,3). Операція скасована."
+                )
+                return
+        elif mode_choice.isdigit():
+            # Одиночный аккаунт
+            choice_num = int(mode_choice)
+            if 1 <= choice_num <= len(messenger_accounts):
+                selected_accounts = [messenger_accounts[choice_num - 1]]
+                selected_mode = f"single_{selected_accounts[0]}"
+            else:
+                print("❌ Невірний номер акаунта. Операція скасована.")
+                return
+        else:
+            print("❌ Невірний вибір. Операція скасована.")
+            return
 
         # Показуємо доступні CSV файли
-        data_dir = "restricted/data"
+        data_dir = self.get_data_dir()
         csv_files = []
 
         if os.path.exists(data_dir):
@@ -3385,7 +4148,7 @@ class SBCAttendeesScraper:
                     csv_files.append(file)
 
         if not csv_files:
-            print("❌ No CSV files found in restricted/data/")
+            print(f"❌ No CSV files found in {data_dir}/")
             return
 
         print("\n📋 Available CSV files:")
@@ -3561,16 +4324,49 @@ class SBCAttendeesScraper:
 
                 # 3. Фінальне підтвердження
                 actual_users = user_limit if user_limit else total_contacts
+                # Определяем текст режима
+                if selected_mode == "multi_messenger":
+                    mode_text = f"з усіх {len(messenger_accounts)} акаунтів (розподіл порівну)"
+                elif selected_mode == "custom_multi":
+                    account_names = [
+                        self.accounts[acc]["name"] for acc in selected_accounts
+                    ]
+                    mode_text = f"з вибраних акаунтів: {', '.join(account_names)} (розподіл порівну)"
+                else:
+                    # Извлекаем имя аккаунта из режима (например, "single_messenger1" -> "messenger1")
+                    account_key = selected_mode.replace("single_", "")
+                    account_name = self.accounts[account_key]["name"]
+                    mode_text = f"з одного акаунта ({account_name})"
+
                 confirm = input(
-                    f"Start multi-messenger messaging to {actual_users} users with {delay_seconds}s delay? (y/n): "
+                    f"Розпочати розсилку {mode_text} для {actual_users} користувачів з затримкою {delay_seconds}с? (y/n): "
                 ).lower()
                 if confirm == "y":
-                    self.bulk_message_multi_account(
-                        selected_file,
-                        delay_seconds,
-                        user_limit,
-                        enable_position_filter,
-                    )
+                    if selected_mode == "multi_messenger":
+                        self.bulk_message_multi_account(
+                            selected_file,
+                            delay_seconds,
+                            user_limit,
+                            enable_position_filter,
+                        )
+                    elif selected_mode == "custom_multi":
+                        self.bulk_message_custom_accounts(
+                            selected_file,
+                            selected_accounts,
+                            delay_seconds,
+                            user_limit,
+                            enable_position_filter,
+                        )
+                    else:
+                        # Извлекаем имя аккаунта из режима
+                        account_key = selected_mode.replace("single_", "")
+                        self.bulk_message_single_account(
+                            selected_file,
+                            account_key,
+                            delay_seconds,
+                            user_limit,
+                            enable_position_filter,
+                        )
                 else:
                     print("❌ Multi-messenger messaging cancelled")
             else:
@@ -3638,7 +4434,7 @@ class SBCAttendeesScraper:
             return
 
         # Показуємо доступні акаунти для обробки
-        messenger_accounts = ["messenger1", "messenger2"]
+        messenger_accounts = ["messenger1", "messenger2", "messenger3"]
         print(f"\n🔧 Доступні messenger акаунти:")
         for i, acc_key in enumerate(messenger_accounts, 1):
             acc = self.accounts[acc_key]
@@ -3740,8 +4536,7 @@ class SBCAttendeesScraper:
         print("\n📞 UPDATE EXISTING CSV WITH CONTACTS")
         print("=" * 40)
 
-        data_dir = "restricted/data"
-        csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
 
         if not os.path.exists(csv_file):
             print(f"❌ Main CSV file not found: {csv_file}")
@@ -3764,37 +4559,136 @@ class SBCAttendeesScraper:
         else:
             print("❌ Contact extraction cancelled")
 
+    def show_csv_status_for_responses(
+        self, csv_file: str = None
+    ) -> Dict[str, int]:
+        """Показує статистику CSV файлу для перевірки відповідей"""
+        if not csv_file:
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+
+        if not PANDAS_AVAILABLE:
+            print("❌ pandas не встановлено")
+            return {}
+
+        if not os.path.exists(csv_file):
+            print(f"❌ Файл {csv_file} не знайдено")
+            return {}
+
+        try:
+            df = pd.read_csv(csv_file)
+
+            # Підраховуємо статистику
+            total_records = len(df)
+
+            # Записи з різними статусами
+            sent_status = len(df[df["connected"] == "Sent"])
+            sent_answer_status = len(df[df["connected"] == "Sent Answer"])
+            answer_status = len(
+                df[
+                    df["connected"].str.contains(
+                        "answer", case=False, na=False
+                    )
+                ]
+            )
+            empty_status = len(
+                df[df["connected"].isna() | (df["connected"] == "")]
+            )
+            true_status = len(df[df["connected"] == "True"])
+
+            # Записи з chat_id
+            has_chat_id = len(
+                df[df["chat_id"].notna() & (df["chat_id"] != "")]
+            )
+
+            # Записи які потребують перевірки
+            check_mask = (
+                (
+                    (df["connected"] == "Sent")
+                    | (df["connected"].isna())
+                    | (df["connected"] == "")
+                    | (df["connected"] == "True")
+                )
+                & (
+                    # Виключаємо тих, хто вже має відповідь (будь-яке значення що містить "answer")
+                    (
+                        ~df["connected"].str.contains(
+                            "answer", case=False, na=False
+                        )
+                    )
+                )
+                & ((df["chat_id"].notna()) & (df["chat_id"] != ""))
+            )
+            needs_checking = len(df[check_mask])
+
+            stats = {
+                "total_records": total_records,
+                "sent_status": sent_status,
+                "sent_answer_status": sent_answer_status,
+                "answer_status": answer_status,
+                "empty_status": empty_status,
+                "true_status": true_status,
+                "has_chat_id": has_chat_id,
+                "needs_checking": needs_checking,
+            }
+
+            return stats
+
+        except Exception as e:
+            print(f"❌ Помилка читання CSV: {e}")
+            return {}
+
     def handle_check_responses(self):
         """Обробляє перевірку відповідей у всіх чатах"""
-        print("\n📬 CHECK FOR RESPONSES IN ALL CHATS")
+        print("\n📬 CHECK FOR RESPONSES IN ALL CHATS (OPTIMIZED)")
         print("=" * 40)
 
-        data_dir = "restricted/data"
-        csv_file = os.path.join(data_dir, "SBC - Attendees.csv")
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
 
         if not os.path.exists(csv_file):
             print(f"❌ Main CSV file not found: {csv_file}")
             print("   First run 'Scrape new contacts' to create the file")
             return
 
-        print(f"📁 CSV file: {csv_file}")
+        # Показуємо статистику CSV перед початком
+        print("� CSV статистика:")
+        csv_stats = self.show_csv_status_for_responses(csv_file)
+        if csv_stats:
+            print(f"   📋 Всього записів: {csv_stats['total_records']}")
+            print(f"   📤 'Sent': {csv_stats['sent_status']}")
+            print(f"   ✅ 'Sent Answer': {csv_stats['sent_answer_status']}")
+            print(f"   � З 'answer': {csv_stats['answer_status']}")
+            print(f"   �📭 Порожні: {csv_stats['empty_status']}")
+            print(f"   ✓ 'True': {csv_stats['true_status']}")
+            print(f"   💬 З chat_id: {csv_stats['has_chat_id']}")
+            print(f"   🔍 Потребують перевірки: {csv_stats['needs_checking']}")
+
+        print(f"\n📁 CSV file: {csv_file}")
         print(
-            "📋 This will check all chats from messenger accounts and update CSV"
+            "📋 ОПТИМІЗОВАНИЙ процес - перевіряє ТІЛЬКИ чати контактів зі статусом:"
+        )
+        print("   ✅ 'Sent' (відправлено повідомлення)")
+        print("   ✅ Порожнє значення")
+        print("   ✅ 'True'")
+        print("   ✅ І у яких є chat_id (встановлений контакт)")
+        print("\n🚫 НЕ перевіряє:")
+        print("   ❌ Будь-який статус з 'answer' (вже є відповідь)")
+        print("   ❌ Записи без chat_id")
+        print("   ❌ Групові чати")
+
+        print("\n🔧 Optimized Process:")
+        print("   1. 🔍 Фільтрація CSV за статусом (тільки релевантні записи)")
+        print("   2. 📬 Check only filtered chats from messenger1 account")
+        print("   3. 📬 Check only filtered chats from messenger2 account")
+        print(
+            "   4. 📝 Update CSV status to 'Sent Answer' for responded contacts"
         )
         print(
-            "   with 'Sent Answer' status for participants who have responded."
+            "   5. 🏷️ Set Follow-up column to 'Answer' for responded contacts"
         )
-        print("\n🔧 Process:")
-        print("   1. Check all chats from messenger1 account")
-        print("   2. Check all chats from messenger2 account")
-        print(
-            "   3. Update CSV status to 'Sent Answer' for responded contacts"
-        )
-        print("   4. Set Follow-up column to 'Answer' for responded contacts")
 
         # Показуємо messenger акаунти
         print(f"\n👥 Messenger accounts to check:")
-        messenger_accounts = ["messenger1", "messenger2"]
+        messenger_accounts = ["messenger1", "messenger2", "messenger3"]
         for account_key in messenger_accounts:
             if account_key in self.accounts:
                 account = self.accounts[account_key]
@@ -3802,19 +4696,41 @@ class SBCAttendeesScraper:
             else:
                 print(f"   ⚠️ {account_key} - not configured")
 
+        if csv_stats.get("needs_checking", 0) == 0:
+            print(
+                "\n✅ Немає записів для перевірки! Всі контакти вже оброблені."
+            )
+            return
+
         confirm = input(
-            "\n🤔 Proceed with checking responses? (y/n): "
+            f"\n🤔 Proceed with checking {csv_stats.get('needs_checking', 0)} filtered chats? (y/n): "
         ).lower()
 
         if confirm == "y":
             try:
-                print("\n🚀 Starting response check...")
+                print(
+                    f"\n🚀 Starting optimized response check for {csv_stats.get('needs_checking', 0)} chats..."
+                )
                 stats = self.check_all_responses_and_update_csv(csv_file)
 
                 if "error" in stats:
                     print("❌ Process failed")
                 else:
                     print("\n✅ Response check completed successfully!")
+
+                    # Показуємо оновлену статистику
+                    print("\n📊 Оновлена статистика:")
+                    new_stats = self.show_csv_status_for_responses(csv_file)
+                    if new_stats:
+                        old_answered = csv_stats.get("sent_answer_status", 0)
+                        new_answered = new_stats.get("sent_answer_status", 0)
+                        increase = new_answered - old_answered
+                        print(
+                            f"   ✅ 'Sent Answer': {old_answered} → {new_answered} (+{increase})"
+                        )
+                        print(
+                            f"   🔍 Потребують перевірки: {csv_stats.get('needs_checking', 0)} → {new_stats.get('needs_checking', 0)}"
+                        )
 
             except Exception as e:
                 print(f"❌ Error during response check: {e}")
@@ -3823,6 +4739,50 @@ class SBCAttendeesScraper:
                 traceback.print_exc()
         else:
             print("❌ Response check cancelled")
+
+    def handle_excluded_companies(self):
+        """Обробляє управління виключеними компаніями"""
+        while True:
+            print("\n🚫 УПРАВЛІННЯ ВИКЛЮЧЕНИМИ КОМПАНІЯМИ")
+            print("=" * 40)
+            print(
+                f"📊 Поточно виключено: {len(self.excluded_companies)} компаній"
+            )
+            print("1. 📋 Показати список виключених компаній")
+            print("2. 🧪 Тестувати компанію")
+            print("3. 🔄 Перезавантажити список з файлу")
+            print("4. ↩️ Повернутися до головного меню")
+
+            choice = input("➡️ Виберіть опцію (1-4): ").strip()
+
+            if choice == "1":
+                self.show_excluded_companies()
+                input("\n⏎ Натисніть Enter для продовження...")
+
+            elif choice == "2":
+                company_name = input(
+                    "\n🏢 Введіть назву компанії для тесту: "
+                ).strip()
+                if company_name:
+                    self.test_company_exclusion(company_name)
+                else:
+                    print("❌ Назва компанії не може бути порожньою")
+                input("\n⏎ Натисніть Enter для продовження...")
+
+            elif choice == "3":
+                print("🔄 Перезавантажуємо список виключених компаній...")
+                old_count = len(self.excluded_companies)
+                self.reload_excluded_companies()
+                new_count = len(self.excluded_companies)
+                print(f"✅ Готово! Компаній: {old_count} → {new_count}")
+                input("\n⏎ Натисніть Enter для продовження...")
+
+            elif choice == "4":
+                break
+
+            else:
+                print("❌ Невірний вибір. Виберіть 1-4.")
+                input("\n⏎ Натисніть Enter для продовження...")
 
     def show_account_status(self):
         """Показує статус всіх акаунтів"""
@@ -3866,15 +4826,21 @@ class SBCAttendeesScraper:
 
         print("ℹ️ Roles:")
         print("   🔍 scraper - Used for scraping new contacts")
-        print("   💬 messenger1/messenger2 - Used for sending messages")
+        print(
+            "   💬 messenger1/messenger2/messenger3 - Used for sending messages"
+        )
         print(
             "\n💡 To configure accounts, edit your .env file with real credentials"
         )
+        print(
+            f"\n🚫 Company Exclusions: {len(self.excluded_companies)} companies loaded"
+        )
 
-    def update_existing_csv_with_contacts(
-        self, csv_file="restricted/data/SBC - Attendees.csv"
-    ):
+    def update_existing_csv_with_contacts(self, csv_file=None):
         """Updates existing CSV file to extract contacts for profiles that don't have them yet"""
+        if csv_file is None:
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+
         print(f"\n📞 ОНОВЛЕННЯ ІСНУЮЧОГО CSV З КОНТАКТАМИ")
         print("=" * 50)
 

@@ -24,16 +24,18 @@ def view_statistics():
 
         # Header
         print(
-            f"{'Дата':<12} {'Новых':<8} {'Валид':<8} {'Отправ':<8} {'Ответ':<8} {'Д':<6} {'Я':<6} {'F-up':<6} {'%Вал':<6} {'%Отв':<6} {'%Д':<6} {'%Я':<6}"
+            f"{'Дата':<12} {'Новых':<8} {'Валид':<8} {'Отправ':<8} {'Ответ':<8} {'Д':<6} {'Я':<6} {'А':<6} {'И':<6} {'F-up':<6} {'%Вал':<6} {'%Отв':<6} {'%Д':<6} {'%Я':<6} {'%А':<6} {'%И':<6}"
         )
-        print("-" * 100)
+        print("-" * 140)
 
         total_scraped = 0
         total_valid = 0
         total_sent = 0
         total_answered = 0
-        total_daniil = 0
+        total_daniil = 0  # Historical data
         total_yaroslav = 0
+        total_anton = 0  # New messenger1
+        total_ihor = 0  # New messenger3
         total_followups = 0
 
         for _, row in df.iterrows():
@@ -45,9 +47,11 @@ def view_statistics():
                 sent = row["Отправлено Сообщений"]
                 answered = row["Ответили"]
 
-                # New columns with defaults
-                daniil = row.get("Даниил", 0)
-                yaroslav = row.get("Ярослав", 0)
+                # New columns with defaults - keep both old and new columns separate
+                daniil = row.get("Даниил", 0)  # Historical data
+                yaroslav = row.get("Ярослав", 0)  # Continues
+                anton = row.get("Антон", 0)  # New messenger1
+                ihor = row.get("Игорь", 0)  # New messenger3
                 followups = row.get("Количество follow_up", 0)
 
                 # Percentages (expecting decimal values, not * 100)
@@ -71,6 +75,12 @@ def view_statistics():
                     row.get("% Ярослав", (yaroslav / sent) if sent > 0 else 0)
                     * 100
                 )
+                anton_pct = (
+                    row.get("% Антон", (anton / sent) if sent > 0 else 0) * 100
+                )
+                ihor_pct = (
+                    row.get("% Игорь", (ihor / sent) if sent > 0 else 0) * 100
+                )
             else:
                 # Fallback to old column names
                 date = row["date"]
@@ -82,6 +92,8 @@ def view_statistics():
                 # Default values for new columns
                 daniil = 0
                 yaroslav = 0
+                anton = 0
+                ihor = 0
                 followups = 0
 
                 if "valid_percentage" in row and pd.notna(
@@ -100,9 +112,11 @@ def view_statistics():
 
                 daniil_pct = 0
                 yaroslav_pct = 0
+                anton_pct = 0
+                ihor_pct = 0
 
             print(
-                f"{date:<12} {scraped:<8} {valid:<8} {sent:<8} {answered:<8} {daniil:<6} {yaroslav:<6} {followups:<6} {valid_pct:<5.1f} {answer_pct:<5.1f} {daniil_pct:<5.1f} {yaroslav_pct:<5.1f}"
+                f"{date:<12} {scraped:<8} {valid:<8} {sent:<8} {answered:<8} {daniil:<6} {yaroslav:<6} {anton:<6} {ihor:<6} {followups:<6} {valid_pct:<5.1f} {answer_pct:<5.1f} {daniil_pct:<5.1f} {yaroslav_pct:<5.1f} {anton_pct:<5.1f} {ihor_pct:<5.1f}"
             )
 
             total_scraped += scraped
@@ -111,10 +125,12 @@ def view_statistics():
             total_answered += answered
             total_daniil += daniil
             total_yaroslav += yaroslav
+            total_anton += anton
+            total_ihor += ihor
             total_followups += followups
 
         # Print totals
-        print("-" * 100)
+        print("-" * 140)
         total_valid_pct = (
             (total_valid / total_scraped * 100) if total_scraped > 0 else 0
         )
@@ -127,9 +143,15 @@ def view_statistics():
         total_yaroslav_pct = (
             (total_yaroslav / total_sent * 100) if total_sent > 0 else 0
         )
+        total_anton_pct = (
+            (total_anton / total_sent * 100) if total_sent > 0 else 0
+        )
+        total_ihor_pct = (
+            (total_ihor / total_sent * 100) if total_sent > 0 else 0
+        )
 
         print(
-            f"{'ИТОГО':<12} {total_scraped:<8} {total_valid:<8} {total_sent:<8} {total_answered:<8} {total_daniil:<6} {total_yaroslav:<6} {total_followups:<6} {total_valid_pct:<5.1f} {total_answer_pct:<5.1f} {total_daniil_pct:<5.1f} {total_yaroslav_pct:<5.1f}"
+            f"{'ИТОГО':<12} {total_scraped:<8} {total_valid:<8} {total_sent:<8} {total_answered:<8} {total_daniil:<6} {total_yaroslav:<6} {total_anton:<6} {total_ihor:<6} {total_followups:<6} {total_valid_pct:<5.1f} {total_answer_pct:<5.1f} {total_daniil_pct:<5.1f} {total_yaroslav_pct:<5.1f} {total_anton_pct:<5.1f} {total_ihor_pct:<5.1f}"
         )
 
         print("\n📈 Ключевые показатели:")
@@ -142,10 +164,16 @@ def view_statistics():
             f"   • Получено ответов: {total_answered:,} ({total_answer_pct:.1f}%)"
         )
         print(
-            f"   • Сообщений от Данила: {total_daniil:,} ({total_daniil_pct:.1f}%)"
+            f"   • Сообщений от Данила (исторические): {total_daniil:,} ({total_daniil_pct:.1f}%)"
         )
         print(
             f"   • Сообщений от Ярослава: {total_yaroslav:,} ({total_yaroslav_pct:.1f}%)"
+        )
+        print(
+            f"   • Сообщений от Антона (новые): {total_anton:,} ({total_anton_pct:.1f}%)"
+        )
+        print(
+            f"   • Сообщений от Игоря (новые): {total_ihor:,} ({total_ihor_pct:.1f}%)"
         )
         print(f"   • Follow-up сообщений: {total_followups:,}")
 

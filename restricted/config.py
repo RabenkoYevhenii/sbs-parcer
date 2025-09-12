@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     messenger2_password: str = Field(default="", env="MESSENGER2_PASSWORD")
     messenger2_user_id: str = Field(default="", env="MESSENGER2_USER_ID")
 
+    # Account Credentials - Messenger Account 3
+    messenger3_username: str = Field(default="", env="MESSENGER3_USERNAME")
+    messenger3_password: str = Field(default="", env="MESSENGER3_PASSWORD")
+    messenger3_user_id: str = Field(default="", env="MESSENGER3_USER_ID")
+
     # URLs
     sbc_login_url: str = Field(
         default="https://sbcconnect.com", env="SBC_LOGIN_URL"
