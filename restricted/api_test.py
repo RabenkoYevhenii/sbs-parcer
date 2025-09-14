@@ -1644,9 +1644,8 @@ class SBCAttendeesScraper:
         # Фільтруємо кандидатів за автором для поточного акаунта
         account_to_author_mapping = {
             "messenger1": [
-                "Daniil",
                 "Anton",
-            ],  # messenger1 обслуговує контакти Daniil та Anton
+            ],  # messenger1 обслуговує тільки контакти Anton
             "messenger2": [
                 "Yaroslav"
             ],  # messenger2 обслуговує контакти Yaroslav
