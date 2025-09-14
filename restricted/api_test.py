@@ -1448,7 +1448,10 @@ class SBCAttendeesScraper:
         return filtered_df
 
     def get_followup_candidates_from_csv(
-        self, csv_file: str = None, use_filters: bool = True
+        self,
+        csv_file: str = None,
+        use_filters: bool = True,
+        enable_position_filter: bool = True,
     ) -> List[Dict]:
         """Отримує кандидатів для follow-up з CSV файлу з покращеним парсуванням дат та фільтрами"""
         if not PANDAS_AVAILABLE:
@@ -1467,23 +1470,38 @@ class SBCAttendeesScraper:
 
             df = pd.read_csv(csv_file)
 
-            # Базова фільтрація
-            mask = (
-                (df["connected"] == "Sent")
-                & (df["chat_id"].notna())
-                & (df["chat_id"] != "")
-                & (df["Follow-up"].isna())  # Тільки ті, де немає відповіді
+            # Базова фільтрація - контакти готові для follow-up
+            base_mask = (
+                (df["connected"] == "Sent")  # Відправлені повідомлення
+                & (df["chat_id"].notna())  # Є chat_id
+                & (df["chat_id"] != "")  # chat_id не порожній
+                & (  # Немає відповіді ЩЕ
+                    (df["Follow-up"].isna())
+                    | (df["Follow-up"] == "")
+                    | (
+                        ~df["Follow-up"].str.contains(
+                            "answer", case=False, na=False
+                        )
+                    )
+                )
             )
 
-            filtered_df = df[mask]
+            filtered_df = df[base_mask]
             print(
                 f"📊 Знайдено {len(filtered_df)} кандидатів з статусом 'Sent' без відповіді"
             )
 
+            # Показуємо розподіл за авторами
+            if "author" in filtered_df.columns:
+                author_counts = filtered_df["author"].value_counts()
+                print(f"📋 Розподіл кандидатів за авторами:")
+                for author, count in author_counts.items():
+                    print(f"   • {author}: {count} контактів")
+
             # Застосовуємо автоматичні фільтри
             if use_filters and len(filtered_df) > 0:
                 filtered_df = self.apply_automatic_filters(
-                    filtered_df, enable_position_filter=True
+                    filtered_df, enable_position_filter=enable_position_filter
                 )
                 print(
                     f"📊 Після застосування фільтрів: {len(filtered_df)} кандидатів"
@@ -1557,6 +1575,9 @@ class SBCAttendeesScraper:
                             "full_name": row["full_name"],
                             "position": row.get("position", ""),
                             "gaming_vertical": row.get("gaming_vertical", ""),
+                            "author": row.get(
+                                "author", ""
+                            ),  # Added author field
                             "user_id": self.extract_user_id_from_url(
                                 row["source_url"]
                             ),
@@ -1586,7 +1607,10 @@ class SBCAttendeesScraper:
             return ""
 
     def process_followup_campaigns_optimized(
-        self, account_key: str = None, use_filters: bool = True
+        self,
+        account_key: str = None,
+        use_filters: bool = True,
+        enable_position_filter: bool = True,
     ) -> Dict[str, int]:
         """Оптимізована обробка follow-up кампаній на основі CSV"""
         if account_key and account_key != self.current_account:
@@ -1600,11 +1624,62 @@ class SBCAttendeesScraper:
 
         # Отримуємо кандидатів з CSV
         candidates = self.get_followup_candidates_from_csv(
-            use_filters=use_filters
+            use_filters=use_filters,
+            enable_position_filter=enable_position_filter,
         )
 
         if not candidates:
             print("✅ Немає кандидатів для follow-up")
+            return {
+                "total_candidates": 0,
+                "analyzed": 0,
+                "day_3_sent": 0,
+                "day_7_sent": 0,
+                "final_sent": 0,
+                "status_updated": 0,
+                "already_sent": 0,
+                "errors": 0,
+            }
+
+        # Фільтруємо кандидатів за автором для поточного акаунта
+        account_to_author_mapping = {
+            "messenger1": [
+                "Daniil",
+                "Anton",
+            ],  # messenger1 обслуговує контакти Daniil та Anton
+            "messenger2": [
+                "Yaroslav"
+            ],  # messenger2 обслуговує контакти Yaroslav
+            "messenger3": ["Ihor"],  # messenger3 обслуговує контакти Ihor
+        }
+
+        current_authors = account_to_author_mapping.get(account_key, [])
+        if current_authors:
+            original_count = len(candidates)
+
+            # Debug: показуємо розподіл авторів у кандидатах що потребують follow-up
+            authors_in_candidates = {}
+            for c in candidates:
+                author = c.get("author", "Unknown")
+                authors_in_candidates[author] = (
+                    authors_in_candidates.get(author, 0) + 1
+                )
+
+            print(f"📋 Автори у кандидатах що потребують follow-up:")
+            for author, count in authors_in_candidates.items():
+                print(f"   • {author}: {count} кандидатів")
+
+            candidates = [
+                c for c in candidates if c.get("author", "") in current_authors
+            ]
+            print(
+                f"📋 Фільтрація за автором ({account_key} -> {current_authors}): {len(candidates)} з {original_count} кандидатів"
+            )
+
+        if not candidates:
+            print(
+                f"✅ Немає кандидатів для follow-up для акаунта {account_key}"
+            )
             return {
                 "total_candidates": 0,
                 "analyzed": 0,
@@ -1754,7 +1829,9 @@ class SBCAttendeesScraper:
 
         return stats
 
-    def process_followup_campaigns_by_author(self) -> Dict[str, int]:
+    def process_followup_campaigns_by_author(
+        self, enable_position_filter: bool = True
+    ) -> Dict[str, int]:
         """Process follow-up campaigns split by author to avoid API permission errors"""
         print(f"\n📬 FOLLOW-UP КАМПАНІЇ ПО АВТОРАМ")
         print("=" * 50)
@@ -1770,6 +1847,20 @@ class SBCAttendeesScraper:
             import pandas as pd
 
             df = pd.read_csv(csv_file, encoding="utf-8")
+
+            # Apply position filtering if enabled
+            if enable_position_filter:
+                print(f"🎯 Застосовуємо фільтр за релевантними позиціями...")
+                original_count = len(df)
+                df = self.apply_automatic_filters(
+                    df, enable_position_filter=True
+                )
+                filtered_count = len(df)
+                print(
+                    f"📊 Після фільтрації за позиціями: {filtered_count} з {original_count} записів"
+                )
+            else:
+                print("⚠️ Фільтр за позиціями вимкнено - включені всі позиції")
 
             # Get current date in Kiev timezone
             from zoneinfo import ZoneInfo
@@ -3965,7 +4056,16 @@ class SBCAttendeesScraper:
             print("1. 📥 Scrape new contacts (uses scraper account)")
             print("2. 👥 Send messages (dual messenger accounts)")
             print(
-                "3. 📞 Follow-up campaigns (track responses & send follow-ups)"
+                "3. 📞 Follow-up campaigns (аналіз контактів за автором + follow-up)"
+            )
+            print(
+                "      • Режим 1: CSV фільтрація - швидкий аналіз з автоматичним розподілом за авторами"
+            )
+            print(
+                "      • Режим 2: Повний аналіз - детальна перевірка всіх чатів"
+            )
+            print(
+                "      • Режим 3: По авторам - автоматичне призначення акаунтів за автором з CSV"
             )
             print("4. 📬 Check for responses and update CSV status")
             print("5. � Update existing CSV with contacts")
@@ -4395,9 +4495,18 @@ class SBCAttendeesScraper:
         print("   📨 Follow-up 3: за 1 день до початку SBC Summit")
 
         print("\n🔧 Режим роботи:")
-        print("   1. 🚀 Оптимізований (на основі CSV - швидко)")
+        print("   1. 🚀 Оптимізований (CSV фільтрація - швидко)")
+        print(
+            "      • Аналізує тільки контакти зі статусом 'Sent' без відповіді"
+        )
+        print("      • Фільтрує за автором повідомлень з CSV")
+        print("      • Перевіряє дати та відправляє follow-up згідно правил")
         print("   2. 🐌 Повний аналіз (всі чати - повільно)")
+        print("      • Завантажує всі чати з акаунта")
+        print("      • Аналізує кожен чат на предмет follow-up")
         print("   3. 👥 По авторам (автоматичне розділення по акаунтах)")
+        print("      • Розділяє контакти за полем 'author' в CSV")
+        print("      • Використовує відповідний акаунт для кожного автора")
 
         mode_choice = input("➡️ Виберіть режим (1-3): ").strip()
 
@@ -4407,30 +4516,64 @@ class SBCAttendeesScraper:
 
             # Додаткові налаштування для оптимізованого режиму
             filter_choice = (
-                input(
-                    "➡️ Використовувати фільтри за позицією та gaming vertical? (y/n): "
-                )
+                input("➡️ Використовувати фільтри за gaming vertical? (y/n): ")
                 .strip()
                 .lower()
             )
             use_filters = filter_choice == "y"
+
+            # Додаємо окрему опцію для фільтру за позицією
+            position_filter_choice = (
+                input(
+                    "➡️ Використовувати фільтр за релевантними позиціями (CEO, COO, CFO, business development, payments, тощо)? (y/n): "
+                )
+                .strip()
+                .lower()
+            )
+            enable_position_filter = position_filter_choice == "y"
+
+            if enable_position_filter:
+                print("🎯 Включено фільтр за релевантними позиціями")
+            else:
+                print("⚠️ Фільтр за позиціями вимкнено - включені всі позиції")
         elif mode_choice == "2":
             method_to_use = "full"
             use_filters = False
+            enable_position_filter = False
             print("✅ Використовується повний аналіз")
         elif mode_choice == "3":
             method_to_use = "by_author"
             use_filters = False
             print("✅ Використовується режим по авторам")
+
+            # Додаємо опцію для фільтру за позицією
+            position_filter_choice = (
+                input(
+                    "➡️ Використовувати фільтр за релевантними позиціями (CEO, COO, CFO, business development, payments, тощо)? (y/n): "
+                )
+                .strip()
+                .lower()
+            )
+            enable_position_filter = position_filter_choice == "y"
+
+            if enable_position_filter:
+                print(
+                    "🎯 Включено фільтр за релевантними позиціями для режиму по авторам"
+                )
+            else:
+                print("⚠️ Фільтр за позиціями вимкнено - включені всі позиції")
         else:
             print("❌ Невірний вибір, використовується оптимізований режим")
             method_to_use = "optimized"
             use_filters = False
+            enable_position_filter = False
 
         # Special handling for by_author method
         if method_to_use == "by_author":
             print("\n🚀 Запускаємо follow-up кампанії по авторам...")
-            stats = self.process_followup_campaigns_by_author()
+            stats = self.process_followup_campaigns_by_author(
+                enable_position_filter
+            )
             return
 
         # Показуємо доступні акаунти для обробки
@@ -4440,11 +4583,11 @@ class SBCAttendeesScraper:
             acc = self.accounts[acc_key]
             print(f"   {i}. {acc['name']} ({acc['username']})")
 
-        print("   3. Обидва акаунти послідовно")
+        print("   4. Всі три акаунти послідовно")
 
         # Вибір акаунта
         account_choice = input(
-            f"➡️ Виберіть акаунт для обробки (1-3): "
+            f"➡️ Виберіть акаунт для обробки (1-4): "
         ).strip()
 
         try:
@@ -4452,7 +4595,7 @@ class SBCAttendeesScraper:
                 # Обробка з messenger1
                 if method_to_use == "optimized":
                     stats = self.process_followup_campaigns_optimized(
-                        "messenger1", use_filters
+                        "messenger1", use_filters, enable_position_filter
                     )
                 else:
                     stats = self.process_followup_campaigns("messenger1")
@@ -4460,20 +4603,28 @@ class SBCAttendeesScraper:
                 # Обробка з messenger2
                 if method_to_use == "optimized":
                     stats = self.process_followup_campaigns_optimized(
-                        "messenger2", use_filters
+                        "messenger2", use_filters, enable_position_filter
                     )
                 else:
                     stats = self.process_followup_campaigns("messenger2")
             elif account_choice == "3":
-                # Обробка з обома акаунтами
-                print("\n🔄 Обробка з обома акаунтами...")
+                # Обробка з messenger3
+                if method_to_use == "optimized":
+                    stats = self.process_followup_campaigns_optimized(
+                        "messenger3", use_filters, enable_position_filter
+                    )
+                else:
+                    stats = self.process_followup_campaigns("messenger3")
+            elif account_choice == "4":
+                # Обробка з усіма трьома акаунтами
+                print("\n🔄 Обробка з усіма трьома акаунтами...")
 
                 print("\n" + "=" * 50)
                 print("📱 MESSENGER 1")
                 print("=" * 50)
                 if method_to_use == "optimized":
                     stats1 = self.process_followup_campaigns_optimized(
-                        "messenger1", use_filters
+                        "messenger1", use_filters, enable_position_filter
                     )
                 else:
                     stats1 = self.process_followup_campaigns("messenger1")
@@ -4483,17 +4634,33 @@ class SBCAttendeesScraper:
                 print("=" * 50)
                 if method_to_use == "optimized":
                     stats2 = self.process_followup_campaigns_optimized(
-                        "messenger2", use_filters
+                        "messenger2", use_filters, enable_position_filter
                     )
                 else:
                     stats2 = self.process_followup_campaigns("messenger2")
 
+                print("\n" + "=" * 50)
+                print("📱 MESSENGER 3")
+                print("=" * 50)
+                if method_to_use == "optimized":
+                    stats3 = self.process_followup_campaigns_optimized(
+                        "messenger3", use_filters, enable_position_filter
+                    )
+                else:
+                    stats3 = self.process_followup_campaigns("messenger3")
+
                 # Об'єднуємо статистику
-                if "error" not in stats1 and "error" not in stats2:
+                if (
+                    "error" not in stats1
+                    and "error" not in stats2
+                    and "error" not in stats3
+                ):
                     combined_stats = {}
                     for key in stats1:
-                        combined_stats[key] = stats1.get(key, 0) + stats2.get(
-                            key, 0
+                        combined_stats[key] = (
+                            stats1.get(key, 0)
+                            + stats2.get(key, 0)
+                            + stats3.get(key, 0)
                         )
 
                     print(f"\n📊 ЗАГАЛЬНА СТАТИСТИКА:")
