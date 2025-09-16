@@ -82,10 +82,10 @@ class SBCAttendeesScraper:
 
         # Шаблони повідомлень для follow-up
         self.follow_up_messages = [
-            "Hello {name} !\nI'm thrilled to see you at the SBC Summit in Lisbon the following month! Before things get hectic, it's always a pleasure to connect with other iGaming experts.\nI speak on behalf of Flexify Finance, a company that specializes in smooth payments for high-risk industries. Visit us at Stand E613 if you're looking into new payment options or simply want to discuss innovation.\nWhat is your main objective or priority for the expo this year? I'd love to know what you're thinking about!",
+            "Hello {name} !\nI'm thrilled to see you at the SBC Summit in Lisbon this week! Before things get hectic, it's always a pleasure to connect with other iGaming experts.\nI speak on behalf of Flexify Finance, a company that specializes in smooth payments for high-risk industries. Visit us at Stand E613 if you're looking into new payment options or simply want to discuss innovation.\nWhat is your main objective or priority for the expo this year? I'd love to know what you're thinking about!",
             "Hi {name} !\nExcited to connect with fellow SBC Summit attendees! I'm representing Flexify Finance - we provide payment solutions specifically designed for iGaming and high-risk industries.\nWe'll be at Stand E613 during the summit in Lisbon. Would love to learn about your current payment challenges or discuss the latest trends in our industry.\nWhat brings you to SBC Summit this year? Any specific goals or connections you're hoping to make?",
             "Hello {name} !\nLooking forward to the SBC Summit in Lisbon! As someone in the iGaming space, I always enjoy connecting with industry professionals before the event buzz begins.\nI'm with Flexify Finance - we specialize in seamless payment processing for high-risk sectors. Feel free to stop by Stand E613 if you'd like to explore new payment innovations.\nWhat are you most excited about at this year's summit? Any particular sessions or networking goals?",
-            "Hi {name}, looks like we'll both be at SBC Lisbon this month!\nAlways great to meet fellow iGaming pros before the chaos begins.\nI'm with Flexify Finance, a payments provider for high-risk verticals - you'll find us at Stand E613.\nOut of curiosity, what's your main focus at the expo this year ?",
+            "Hi {name}, looks like we'll both be at SBC Lisbon today!\nAlways great to meet fellow iGaming pros before the chaos begins.\nI'm with Flexify Finance, a payments provider for high-risk verticals - you'll find us at Stand E613.\nOut of curiosity, what's your main focus at the expo this year ?",
         ]
 
         # Second follow-up message that always gets sent after the first one
@@ -98,6 +98,11 @@ class SBCAttendeesScraper:
             "day_3": "Hello, {name}\nJust to follow up, Flexify Finance will be present at SBC Summit Lisbon at Stand E613. With more than 80 local payment options, we're helping iGaming brands expand in high-risk markets while also holding a prize draw.\nWould you have a few minutes during the expo? It would be great to connect.",
             "day_7": "Hello {name}!\nJust wanted to gently follow up and let you know that Flexify Finance will be at SBC Summit Lisbon (Stand E613). We're supporting iGaming brands in high-risk markets with 80+ local payment options - and we'll also have a fun prize draw at our stand.\nIf you have a few minutes during the expo, I'd really enjoy connecting and having a quick chat.",
             "final": "Hi {name}!\nSBC Summit Lisbon starts tomorrow! 🎉\nFlexify Finance will be at Stand E613 with 80+ local payment solutions for high-risk markets. We'd love to meet you in person and discuss how we can help your iGaming business grow.\nDon't miss our prize draw at the stand! Looking forward to seeing you there.",
+            "conference_active": {
+                "en": "We're already at the conference! We're easy to find. The big all-seeing eye 👁️ will show you the way to the Flexify booth.",
+                "ua": "Ми вже на конференції! Нас легко знайти. Наше велике око 👁️ покаже вам шлях до стенду Flexify.",
+                "ru": "Мы уже на конференции! Нас легко найти. Наш большой глаз 👁️ покажет вам путь к стенду Flexify."
+            },
         }
 
         # SBC Summit start date (September 16, 2025) in Kyiv timezone
@@ -480,7 +485,7 @@ class SBCAttendeesScraper:
             return True
 
     def api_request(
-        self, method, endpoint, data=None, max_retries=3, timeout_seconds=3
+        self, method, endpoint, data=None, max_retries=5, timeout_seconds=3
     ):
         """Виконує API запит через браузер з таймаутом і повторними спробами"""
         if not self.is_logged_in:
@@ -553,11 +558,12 @@ class SBCAttendeesScraper:
                 # Обрабатываем строковый статус 'error' отдельно
                 if status == "error":
                     if attempt < max_retries - 1:
+                        delay = min(2 ** attempt * 2, 30)  # Exponential backoff, max 30s
                         print(
                             f"   ⚠️ Попытка {attempt + 1} не удалась: {result.get('message')}"
                         )
-                        print(f"   🔄 Повторная попытка через 3 секунды...")
-                        time.sleep(3)
+                        print(f"   🔄 Повторная попытка через {delay} секунд...")
+                        time.sleep(delay)
                         continue
                     else:
                         print(
@@ -572,9 +578,17 @@ class SBCAttendeesScraper:
                     return result.get("data")
                 else:
                     if attempt < max_retries - 1:
-                        print(f"   ⚠️ Попытка {attempt + 1}: Статус {status}")
-                        print(f"   🔄 Повторная попытка через 3 секунды...")
-                        time.sleep(3)
+                        # Special handling for rate limits (429)
+                        if status == 429:
+                            delay = min(15 + (attempt * 10), 60)  # Start with 15s, increase by 10s each attempt, max 60s
+                            print(f"   🚫 Rate limit (429) - попытка {attempt + 1}")
+                            print(f"   ⏳ Ожидание {delay} секунд для снятия лимита...")
+                        else:
+                            delay = min(2 ** attempt * 3, 30)  # Regular exponential backoff
+                            print(f"   ⚠️ Попытка {attempt + 1}: Статус {status}")
+                            print(f"   🔄 Повторная попытка через {delay} секунд...")
+                        
+                        time.sleep(delay)
                         continue
                     else:
                         print(
@@ -586,9 +600,10 @@ class SBCAttendeesScraper:
 
             except Exception as e:
                 if attempt < max_retries - 1:
+                    delay = min(2 ** attempt * 2, 30)  # Exponential backoff for exceptions
                     print(f"   ⚠️ Исключение при попытке {attempt + 1}: {e}")
-                    print(f"   🔄 Повторная попытка через 3 секунды...")
-                    time.sleep(3)
+                    print(f"   🔄 Повторная попытка через {delay} секунд...")
+                    time.sleep(delay)
                     continue
                 else:
                     print(
@@ -1008,9 +1023,9 @@ class SBCAttendeesScraper:
         return result
 
     def send_followup_message(
-        self, chat_id: str, followup_type: str, participant_name: str
+        self, chat_id: str, followup_type: str, participant_name: str, language: str = "en"
     ) -> bool:
-        """Відправляє follow-up повідомлення"""
+        """Відправляє follow-up повідомлення з підтримкою мови"""
         if followup_type not in self.follow_up_templates:
             print(f"❌ Невідомий тип follow-up: {followup_type}")
             return False
@@ -1023,8 +1038,24 @@ class SBCAttendeesScraper:
         )
 
         # Форматуємо повідомлення
-        message_template = self.follow_up_templates[followup_type]
-        message = message_template.format(name=first_name)
+        template = self.follow_up_templates[followup_type]
+        
+        # Handle multi-language templates (like conference_active)
+        if isinstance(template, dict):
+            # Use detected language or fallback to English
+            if language in template:
+                message_template = template[language]
+            else:
+                message_template = template.get("en", list(template.values())[0])
+        else:
+            # Handle old-style string templates
+            message_template = template
+        
+        # Format message with name if it contains {name}
+        if "{name}" in message_template:
+            message = message_template.format(name=first_name)
+        else:
+            message = message_template
 
         # Відправляємо повідомлення
         return self.send_message(chat_id, message)
@@ -2839,10 +2870,53 @@ class SBCAttendeesScraper:
             print(f"       ❌ Помилка оновлення Follow-up статусу: {e}")
             return False
 
+    def check_message_already_sent_in_chat(self, chat_data: dict, followup_type: str) -> bool:
+        """Перевіряє чи вже було відправлено повідомлення цього типу в чаті"""
+        if not chat_data or not isinstance(chat_data, dict):
+            return False
+
+        messages = chat_data.get("messages", [])
+        if not messages:
+            return False
+
+        # Get current user ID to identify our messages
+        current_user_id = self.accounts[self.current_account]["user_id"]
+        
+        # Get the template for this followup type
+        if followup_type not in self.follow_up_templates:
+            return False
+            
+        template = self.follow_up_templates[followup_type]
+        
+        # Extract key phrases to check for
+        key_phrases = []
+        if isinstance(template, dict):
+            # Multi-language template
+            for lang_template in template.values():
+                # Extract distinctive phrases (without {name} placeholder)
+                clean_template = lang_template.replace("{name}", "").strip()
+                if len(clean_template) > 10:  # Only use substantial phrases
+                    key_phrases.append(clean_template[:30])  # First 30 chars as key phrase
+        else:
+            # Single language template
+            clean_template = template.replace("{name}", "").strip()
+            if len(clean_template) > 10:
+                key_phrases.append(clean_template[:30])
+
+        # Check our messages for these key phrases
+        for msg in messages:
+            if msg.get("userId") == current_user_id and msg.get("message"):
+                message_text = msg.get("message", "")
+                for phrase in key_phrases:
+                    if phrase.lower() in message_text.lower():
+                        return True
+        
+        return False
+
     def check_followup_already_sent(
-        self, csv_file: str, chat_id: str, followup_type: str
+        self, csv_file: str, chat_id: str, followup_type: str, chat_data: dict = None
     ) -> bool:
-        """Перевіряє чи вже був відправлений follow-up цього типу"""
+        """Перевіряє чи вже був відправлений follow-up цього типу (CSV + повідомлення)"""
         try:
             import pandas as pd
 
@@ -2852,12 +2926,14 @@ class SBCAttendeesScraper:
             mask = df["chat_id"] == chat_id
 
             if mask.any():
-                comment = df.loc[mask, "Comment"].iloc[0]
-                if pd.isna(comment):
-                    return False
+                # Check Follow-up type column first
+                followup_type_col = df.loc[mask, "Follow-up type"].iloc[0]
+                if pd.notna(followup_type_col) and followup_type in str(followup_type_col):
+                    return True
 
-                # Перевіряємо чи містить коментар інформацію про цей тип follow-up
-                return f"follow-up_{followup_type}" in str(comment)
+            # Additional check: scan actual chat messages if chat_data provided
+            if chat_data:
+                return self.check_message_already_sent_in_chat(chat_data, followup_type)
 
             return False
 
@@ -2866,6 +2942,225 @@ class SBCAttendeesScraper:
         except Exception as e:
             print(f"       ⚠️ Помилка перевірки follow-up: {e}")
             return False
+
+    def process_positive_conversation_followups(
+        self, csv_file: str = None
+    ) -> Dict[str, int]:
+        """Processes positive conversations across all messaging accounts and sends conference followup"""
+        if not csv_file:
+            csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+
+        if not PANDAS_AVAILABLE:
+            print("❌ pandas не встановлено, не можемо обробити CSV")
+            return {"error": 1}
+
+        print(f"\n📬 ОБРОБКА ПОЗИТИВНИХ РОЗМОВ ДЛЯ CONFERENCE FOLLOWUP")
+        print(f"📁 CSV файл: {csv_file}")
+        print("=" * 60)
+
+        stats = {
+            "total_accounts": 0,
+            "total_chats_checked": 0,
+            "positive_conversations": 0,
+            "conference_followups_sent": 0,
+            "already_sent": 0,
+            "errors": 0,
+            "language_detected": {"en": 0, "ua": 0, "ru": 0, "unknown": 0},
+            "sentiment_analysis": {"positive": 0, "negative": 0, "neutral": 0},
+            "accounts_processed": [],
+        }
+
+        # List of messenger accounts to check
+        messenger_accounts = ["messenger1", "messenger2", "messenger3"]
+        original_account = self.current_account
+
+        try:
+            # Load CSV to check which chats to examine
+            import pandas as pd
+            df = pd.read_csv(csv_file)
+            
+            # Filter for chats that have responses - check both "connected" and "Comment" columns
+            responded_mask = (
+                # Check connected column for "Answer" values
+                (df["connected"].str.contains("answer", case=False, na=False))
+            )
+            responded_chats = df[responded_mask]
+            print(f"📊 Знайдено {len(responded_chats)} чатів з відповідями для аналізу")
+
+            # Process each messenger account
+            for account_key in messenger_accounts:
+                if account_key not in self.accounts:
+                    continue
+
+                print(f"\n👤 Обробляємо акаунт: {self.accounts[account_key]['name']}")
+                
+                # Switch to this account
+                if not self.switch_account(account_key):
+                    print(f"❌ Не вдалося переключитися на {account_key}")
+                    stats["errors"] += 1
+                    continue
+
+                stats["total_accounts"] += 1
+                stats["accounts_processed"].append(account_key)
+
+                # Load chats for this account
+                print("📥 Завантажуємо список чатів...")
+                chats_data = self.load_chats_list()
+
+                if not chats_data:
+                    print("❌ Не вдалося завантажити чати")
+                    stats["errors"] += 1
+                    continue
+
+                # Create mapping of chat_id to CSV data for quick lookup
+                chat_id_to_csv = {}
+                for _, row in responded_chats.iterrows():
+                    if pd.notna(row.get("chat_id")):
+                        chat_id_to_csv[str(row["chat_id"])] = row
+
+                # Filter chats to only those with responses
+                relevant_chats = [chat for chat in chats_data if chat.get("chatId") in chat_id_to_csv]
+                total_chats_to_process = len(relevant_chats)
+                processed_count = 0
+
+                account_chats_checked = 0
+                account_positive_found = 0
+                account_followups_sent = 0
+
+                print(f"📊 Знайдено {total_chats_to_process} чатів з відповідями для обробки")
+
+                # Check each chat for positive sentiment
+                for chat in relevant_chats:
+                    processed_count += 1
+                    chat_id = chat.get("chatId")
+                    if not chat_id:
+                        continue
+
+                    account_chats_checked += 1
+                    stats["total_chats_checked"] += 1
+
+                    # Load chat details
+                    print(f"🔍 [{processed_count}/{total_chats_to_process}] Аналізуємо чат {chat_id}...")
+                    chat_data = self.load_chat_details(chat_id)
+
+                    if not chat_data:
+                        print(f"❌ Не вдалося завантажити деталі чату {chat_id}")
+                        stats["errors"] += 1
+                        continue
+
+                    # Check if conference followup already sent (CSV + message check)
+                    already_sent = self.check_followup_already_sent(
+                        csv_file, chat_id, "conference_active", chat_data
+                    )
+                    if already_sent:
+                        print(f"⏭️ [{processed_count}/{total_chats_to_process}] Conference followup вже відправлено для chat {chat_id}")
+                        stats["already_sent"] += 1
+                        continue
+
+                    # Analyze responses for sentiment
+                    response_analysis = self.analyze_chat_for_responses(chat_data)
+                    
+                    if not response_analysis["has_response"]:
+                        continue
+
+                    # Get full chat analysis including participant name
+                    full_analysis = self.analyze_chat_responses(chat_data)
+
+                    # Get all response messages from participant
+                    messages = chat_data.get("messages", [])
+                    current_user_id = self.accounts[self.current_account]["user_id"]
+                    
+                    participant_messages = []
+                    for msg in messages:
+                        if msg.get("userId") != current_user_id and msg.get("message"):
+                            participant_messages.append(msg.get("message", ""))
+
+                    if not participant_messages:
+                        continue
+
+                    # Analyze sentiment of all participant messages
+                    combined_text = " ".join(participant_messages)
+                    language = self.detect_language(combined_text)
+                    sentiment = self.detect_positive_sentiment(combined_text, language)
+
+                    # Update language stats
+                    stats["language_detected"][language] = stats["language_detected"].get(language, 0) + 1
+                    
+                    # Update sentiment stats
+                    stats["sentiment_analysis"][sentiment["sentiment_type"]] += 1
+
+                    print(f"     📝 Мова: {language}, Сентимент: {sentiment['sentiment_type']} (впевненість: {sentiment['confidence']:.2f})")
+                    
+                    if sentiment["matched_keywords"]:
+                        print(f"     🎯 Ключові слова: {', '.join(sentiment['matched_keywords'][:3])}")
+
+                    # If positive sentiment detected, send conference followup
+                    if sentiment["is_positive"] and sentiment["confidence"] >= 0.4:
+                        stats["positive_conversations"] += 1
+                        account_positive_found += 1
+
+                        # Get participant name
+                        participant_name = full_analysis.get("participant_name", "")
+
+                        # Send conference followup message with language detection
+                        print(f"📨 Відправляємо conference followup до {participant_name or 'невідомого'} (мова: {language})...")
+                        
+                        # Use the updated send_followup_message method that handles language
+                        if self.send_followup_message(chat_id, "conference_active", participant_name, language):
+                            print(f"✅ Conference followup відправлено успішно")
+                            stats["conference_followups_sent"] += 1
+                            account_followups_sent += 1
+
+                            # Update CSV with followup status
+                            self.update_csv_followup_status(csv_file, chat_id, "conference_active")
+                            
+                        else:
+                            print(f"❌ Помилка відправки conference followup")
+                            stats["errors"] += 1
+
+                        # Longer delay between messages to avoid rate limits
+                        delay = random.uniform(5.0, 10.0)  # Random delay 5-10 seconds
+                        print(f"       ⏱️ Затримка {delay:.1f}с перед наступним повідомленням...")
+                        time.sleep(delay)
+
+                print(f"📊 Результати для {account_key}:")
+                print(f"   🔍 Чатів перевірено: {account_chats_checked}")
+                print(f"   ✅ Позитивних розмов: {account_positive_found}")
+                print(f"   📨 Followup відправлено: {account_followups_sent}")
+
+        except Exception as e:
+            print(f"❌ Критична помилка: {e}")
+            traceback.print_exc()
+            stats["errors"] += 1
+
+        finally:
+            # Return to original account
+            if original_account != self.current_account:
+                print(f"\n🔄 Повертаємося до оригінального акаунта {original_account}")
+                self.switch_account(original_account)
+
+        # Print final summary
+        print(f"\n📊 ПІДСУМКИ CONFERENCE FOLLOWUP КАМПАНІЇ:")
+        print(f"   👥 Акаунтів оброблено: {stats['total_accounts']}")
+        print(f"   📬 Чатів перевірено: {stats['total_chats_checked']}")
+        print(f"   ✅ Позитивних розмов: {stats['positive_conversations']}")
+        print(f"   📨 Conference followup відправлено: {stats['conference_followups_sent']}")
+        print(f"   ⏭️ Вже відправлені: {stats['already_sent']}")
+        print(f"   ❌ Помилок: {stats['errors']}")
+        print(f"   🔧 Акаунти: {', '.join(stats['accounts_processed'])}")
+        
+        print(f"\n🌍 СТАТИСТИКА МОВИ:")
+        for lang, count in stats["language_detected"].items():
+            print(f"   {lang}: {count}")
+        
+        print(f"\n😊 СТАТИСТИКА СЕНТИМЕНТУ:")
+        for sentiment, count in stats["sentiment_analysis"].items():
+            print(f"   {sentiment}: {count}")
+
+        success_rate = ((stats["conference_followups_sent"] / max(stats["positive_conversations"], 1)) * 100) if stats["positive_conversations"] > 0 else 0
+        print(f"   📈 Успішність відправки: {success_rate:.1f}%")
+
+        return stats
 
     def check_all_responses_and_update_csv(
         self, csv_file: str = None
@@ -3155,6 +3450,184 @@ class SBCAttendeesScraper:
                 result["first_response_date"] = first_response_timestamp
 
         return result
+
+    def detect_language(self, text: str) -> str:
+        """Detects the language of a message using simple keyword matching"""
+        if not text:
+            return "unknown"
+        
+        text_lower = text.lower()
+        
+        # English keywords and patterns
+        english_indicators = [
+            'the', 'and', 'you', 'that', 'will', 'with', 'have', 'this', 'for', 
+            'not', 'are', 'but', 'what', 'all', 'were', 'they', 'been', 'said',
+            'each', 'which', 'their', 'time', 'would', 'about', 'if', 'up', 'out',
+            'many', 'then', 'them', 'these', 'so', 'some', 'her', 'would', 'make',
+            'like', 'into', 'him', 'has', 'two', 'more', 'very', 'after', 'words',
+            'long', 'than', 'first', 'water', 'been', 'call', 'who', 'its', 'now',
+            'find', 'long', 'down', 'day', 'did', 'get', 'come', 'made', 'may', 'part'
+        ]
+        
+        # Ukrainian specific keywords
+        ukrainian_indicators = [
+            'та', 'що', 'не', 'на', 'в', 'я', 'з', 'до', 'від', 'за', 'про', 'під',
+            'над', 'при', 'або', 'але', 'це', 'як', 'так', 'уже', 'тут', 'там',
+            'коли', 'де', 'чому', 'хто', 'який', 'яка', 'які', 'для', 'без', 'через',
+            'після', 'перед', 'між', 'серед', 'поза', 'крім', 'окрім', 'разом',
+            'українською', 'україна', 'київ', 'львів', 'одеса', 'харків', 'дніпро'
+        ]
+        
+        # Russian specific keywords  
+        russian_indicators = [
+            'и', 'не', 'на', 'в', 'я', 'с', 'до', 'от', 'за', 'про', 'под',
+            'над', 'при', 'или', 'но', 'это', 'как', 'так', 'уже', 'тут', 'там',
+            'когда', 'где', 'почему', 'кто', 'какой', 'какая', 'какие', 'для', 'без',
+            'русским', 'россия', 'москва', 'санкт-петербург', 'новосибирск'
+        ]
+        
+        # Count matches
+        english_score = sum(1 for word in english_indicators if word in text_lower)
+        ukrainian_score = sum(1 for word in ukrainian_indicators if word in text_lower)
+        russian_score = sum(1 for word in russian_indicators if word in text_lower)
+        
+        # Check for specific Ukrainian characters
+        has_ukrainian_chars = bool(re.search(r'[іїєґ]', text_lower))
+        
+        # Check for Cyrillic characters
+        has_cyrillic = bool(re.search(r'[а-яё]', text_lower))
+        
+        # Determine language
+        if has_ukrainian_chars or ukrainian_score > max(russian_score, english_score):
+            return "ua"
+        elif has_cyrillic or russian_score > max(ukrainian_score, english_score):
+            return "ru"
+        elif english_score > 0:
+            return "en"
+        else:
+            # Fallback: if has Cyrillic but can't distinguish, default to Ukrainian
+            if has_cyrillic:
+                return "ua"
+            return "unknown"
+
+    def detect_positive_sentiment(self, text: str, language: str = "en") -> Dict:
+        """Detects if a message has positive sentiment towards meeting/coming to the conference"""
+        if not text:
+            return {"is_positive": False, "confidence": 0.0, "matched_keywords": []}
+        
+        text_lower = text.lower()
+        matched_keywords = []
+        
+        if language == "en":
+            positive_keywords = [
+                # Definite positive responses
+                "i will come", "i'll come", "will come", "coming to", "see you at",
+                "visit you", "visiting your", "come to your", "drop by", "stop by",
+                "looking forward", "excited to", "can't wait", "will visit",
+                "will be there", "see you there", "meet you", "interested in",
+                "would like to", "keen to", "happy to", "glad to", "sure",
+                "definitely", "absolutely", "of course", "sounds good", "great",
+                "excellent", "perfect", "wonderful", "awesome", "fantastic",
+                "will attend", "planning to", "intending to", "will join",
+                "count me in", "i'm in", "yes", "yep", "yeah", "certainly",
+                "booth", "stand", "conference", "expo", "summit", "event",
+                "meeting", "chat", "discuss", "talk", "connect", "network"
+            ]
+            
+            # Negative indicators
+            negative_keywords = [
+                "not interested", "no thank", "not relevant", "not our", "not for us",
+                "don't need", "already have", "not looking", "busy", "can't make",
+                "won't be able", "unable to", "not attending", "skip", "pass",
+                "not suitable", "not applicable", "not related", "unsubscribe",
+                "remove me", "stop", "spam", "not going", "cancel", "decline"
+            ]
+            
+        elif language == "ua":  # Ukrainian
+            positive_keywords = [
+                # Ukrainian positive responses
+                "прийду", "приїжджу", "буду", "зустрінемося", "побачимося", "завітаю",
+                "відвідаю", "заходь", "заходжу", "цікаво", "цікавить", "хочу",
+                "планую", "збираюся", "обов'язково", "звичайно", "так", "добре",
+                "чудово", "відмінно", "супер", "класно", "круто", "дуже добре",
+                "стенд", "бут", "конференція", "експо", "саміт", "подія", "зустріч"
+            ]
+            
+            negative_keywords = [
+                "не цікавить", "не треба", "не потрібно", "не підходить", "не для нас",
+                "не актуально", "зайнятий", "не зможу", "не буду", "пропускаю",
+                "не йду", "відписка", "прибрати", "стоп", "спам", "скасувати"
+            ]
+            
+        elif language == "ru":  # Russian
+            positive_keywords = [
+                # Russian positive responses
+                "приду", "приеду", "буду", "встретимся", "увидимся", "зайду",
+                "посещу", "интересно", "интересует", "хочу", "планирую", "собираюсь",
+                "обязательно", "конечно", "да", "хорошо", "отлично", "супер",
+                "стенд", "бут", "конференция", "экспо", "саммит", "событие", "встреча"
+            ]
+            
+            negative_keywords = [
+                "не интересует", "не нужно", "не подходит", "не для нас",
+                "не актуально", "занят", "не смогу", "не буду", "пропускаю",
+                "не иду", "отписка", "убрать", "стоп", "спам", "отменить"
+            ]
+            
+        else:  # fallback for unknown languages - combine all
+            positive_keywords = [
+                # English
+                "i will come", "will come", "see you at", "visit you", "interested in",
+                "definitely", "yes", "great", "perfect", "conference", "booth", "stand",
+                # Ukrainian
+                "прийду", "буду", "цікаво", "планую", "так", "добре", "чудово",
+                # Russian  
+                "приду", "буду", "интересно", "хочу", "да", "хорошо", "отлично"
+            ]
+            
+            negative_keywords = [
+                # English
+                "not interested", "not relevant", "busy", "not going",
+                # Ukrainian
+                "не цікавить", "не треба", "не буду", "не йду",
+                # Russian
+                "не интересует", "не нужно", "не буду", "не иду"
+            ]
+        
+        # Check for positive keywords
+        for keyword in positive_keywords:
+            if keyword in text_lower:
+                matched_keywords.append(keyword)
+        
+        # Check for negative keywords (they override positive)
+        negative_matches = []
+        for keyword in negative_keywords:
+            if keyword in text_lower:
+                negative_matches.append(keyword)
+        
+        # Calculate sentiment
+        if negative_matches:
+            return {
+                "is_positive": False, 
+                "confidence": 0.9, 
+                "matched_keywords": negative_matches,
+                "sentiment_type": "negative"
+            }
+        elif matched_keywords:
+            confidence = min(len(matched_keywords) * 0.3 + 0.4, 1.0)
+            return {
+                "is_positive": True, 
+                "confidence": confidence, 
+                "matched_keywords": matched_keywords,
+                "sentiment_type": "positive"
+            }
+        else:
+            return {
+                "is_positive": False, 
+                "confidence": 0.0, 
+                "matched_keywords": [],
+                "sentiment_type": "neutral"
+            }
 
     def update_csv_response_status_by_chat_id(
         self,
@@ -4066,15 +4539,16 @@ class SBCAttendeesScraper:
             print(
                 "      • Режим 3: По авторам - автоматичне призначення акаунтів за автором з CSV"
             )
-            print("4. 📬 Check for responses and update CSV status")
-            print("5. � Update existing CSV with contacts")
-            print("6. 🚫 Manage excluded companies")
-            print("7. � Account status")
-            print("8. �🚪 Exit")
+            print("4. �️ Conference followup for positive conversations")
+            print("5. �📬 Check for responses and update CSV status")
+            print("6. 📝 Update existing CSV with contacts")
+            print("7. 🚫 Manage excluded companies")
+            print("8. 📊 Account status")
+            print("9. 🚪 Exit")
             print("=" * 60)
             print(f"🚫 Excluded companies: {len(self.excluded_companies)}")
 
-            choice = input("➡️ Choose an action (1-8): ").strip()
+            choice = input("➡️ Choose an action (1-9): ").strip()
 
             if choice == "1":
                 self.handle_scrape_contacts()
@@ -4083,18 +4557,20 @@ class SBCAttendeesScraper:
             elif choice == "3":
                 self.handle_followup_campaigns()
             elif choice == "4":
-                self.handle_check_responses()
+                self.handle_conference_followup()
             elif choice == "5":
-                self.handle_update_csv_contacts()
+                self.handle_check_responses()
             elif choice == "6":
-                self.handle_excluded_companies()
+                self.handle_update_csv_contacts()
             elif choice == "7":
-                self.show_account_status()
+                self.handle_excluded_companies()
             elif choice == "8":
+                self.show_account_status()
+            elif choice == "9":
                 print("👋 Goodbye!")
                 break
             else:
-                print("❌ Invalid choice. Please select 1-8.")
+                print("❌ Invalid choice. Please select 1-9.")
 
     def handle_scrape_contacts(self):
         """Обробляє скрейпінг нових контактів"""
@@ -4697,6 +5173,67 @@ class SBCAttendeesScraper:
         except Exception as e:
             print(f"❌ Помилка виконання follow-up кампанії: {e}")
 
+    def handle_conference_followup(self):
+        """Handles conference followup for positive conversations"""
+        print("\n👁️ CONFERENCE FOLLOWUP FOR POSITIVE CONVERSATIONS")
+        print("=" * 60)
+        print("Цей режим:")
+        print("• Перевіряє всі messenger акаунти")
+        print("• Аналізує чати з відповідями")
+        print("• Визначає мову повідомлень")
+        print("• Розпізнає позитивний сентимент")
+        print("• Відправляє conference followup тільки для позитивних розмов")
+        print("=" * 60)
+
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+
+        if not os.path.exists(csv_file):
+            print(f"❌ Main CSV file not found: {csv_file}")
+            print("   First run 'Check for responses' to populate response data")
+            return
+
+        print(f"📁 Використовуємо CSV: {csv_file}")
+
+        # Show current CSV status for responses
+        print("\n📊 Поточний статус CSV:")
+        response_stats = self.show_csv_status_for_responses(csv_file)
+        
+        if response_stats.get("with_responses", 0) == 0:
+            print("❌ Немає чатів з відповідями для аналізу")
+            print("   Спочатку запустіть 'Check for responses and update CSV status'")
+            return
+
+        print(f"\n📬 Знайдено {response_stats['with_responses']} чатів з відповідями")
+        
+        confirm = input("\n➡️ Продовжити з conference followup кампанією? (y/n): ").lower()
+        if confirm != 'y':
+            print("❌ Операцію скасовано")
+            return
+
+        try:
+            print(f"\n🚀 Запускаємо conference followup кампанію...")
+            
+            # Run the conference followup campaign
+            stats = self.process_positive_conversation_followups(csv_file)
+
+            # Show final results
+            if stats.get("error"):
+                print("❌ Кампанія завершена з помилками")
+            else:
+                print(f"\n✅ КАМПАНІЯ ЗАВЕРШЕНА УСПІШНО!")
+                print(f"📈 Результати:")
+                print(f"   📬 Чатів проаналізовано: {stats.get('total_chats_checked', 0)}")
+                print(f"   ✅ Позитивних розмов: {stats.get('positive_conversations', 0)}")
+                print(f"   📨 Conference followup відправлено: {stats.get('conference_followups_sent', 0)}")
+                
+                if stats.get('positive_conversations', 0) > 0:
+                    success_rate = (stats.get('conference_followups_sent', 0) / stats.get('positive_conversations', 0)) * 100
+                    print(f"   📊 Успішність: {success_rate:.1f}%")
+
+        except Exception as e:
+            print(f"❌ Помилка виконання conference followup кампанії: {e}")
+            traceback.print_exc()
+
     def handle_update_csv_contacts(self):
         """Обробляє оновлення існуючого CSV з контактами"""
         print("\n📞 UPDATE EXISTING CSV WITH CONTACTS")
@@ -4786,6 +5323,15 @@ class SBCAttendeesScraper:
             )
             needs_checking = len(df[check_mask])
 
+            # Count responses from both connected and Comment columns
+            with_responses_mask = (
+                (df["connected"].str.contains("answer", case=False, na=False)) |
+                (df["Comment"].str.contains("answered", case=False, na=False)) |
+                (df["Comment"].str.contains("responded", case=False, na=False)) |
+                (df["Comment"].str.contains("replied", case=False, na=False))
+            )
+            with_responses = len(df[with_responses_mask])
+
             stats = {
                 "total_records": total_records,
                 "sent_status": sent_status,
@@ -4795,6 +5341,7 @@ class SBCAttendeesScraper:
                 "true_status": true_status,
                 "has_chat_id": has_chat_id,
                 "needs_checking": needs_checking,
+                "with_responses": with_responses,
             }
 
             return stats
