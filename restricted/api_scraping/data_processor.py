@@ -647,35 +647,173 @@ class DataProcessor:
             return False
 
     def update_csv_followup_status(
-        self, csv_file: str, chat_id: str, followup_type: str
-    ) -> bool:
-        """Updates CSV with followup status"""
+        self,
+        csv_file: str,
+        chat_id: str,
+        followup_type: str,
+        chat_data: dict = None,
+    ):
+        """Оновлює статус Follow-up в CSV файлі після відправки з підтримкою conference_active та створення нових записів"""
         try:
-            # Read current CSV
-            rows = []
-            with open(csv_file, "r", encoding="utf-8", newline="") as file:
-                reader = csv.DictReader(file)
-                fieldnames = reader.fieldnames
+            import pandas as pd
+            from zoneinfo import ZoneInfo
+            from datetime import datetime
 
-                # Add followup column if it doesn't exist
-                followup_column = f"{followup_type.title()} Follow-up"
-                if followup_column not in fieldnames:
-                    fieldnames = list(fieldnames) + [followup_column]
+            df = pd.read_csv(csv_file)
 
-                for row in reader:
-                    if row.get("Chat ID") == chat_id:
-                        row[followup_column] = "True"
-                    rows.append(row)
+            # Спочатку шукаємо запис за chat_id
+            mask = df["chat_id"] == chat_id
+            found_row = False
 
-            # Write updated CSV
-            with open(csv_file, "w", encoding="utf-8", newline="") as file:
-                writer = csv.DictWriter(file, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
+            if mask.any():
+                found_row = True
+                print(f"       📋 Знайдено запис за chat_id: {chat_id}")
+            else:
+                print(
+                    f"       🔍 Запис з chat_id {chat_id} не знайдено, шукаємо за user_id..."
+                )
 
-            return True
+                # Якщо chat_data надано, спробуємо знайти за user_id з учасників чату
+                if chat_data:
+                    # Note: We need to get current_user_id from the base_scraper
+                    # This might need to be passed as a parameter in the future
+                    current_user_id = getattr(self, "_current_user_id", None)
+                    if not current_user_id:
+                        print(f"       ⚠️ Не вдалося отримати current_user_id")
+                        return False
+
+                    participant_id = None
+                    participant_name = "Unknown"
+
+                    # Знаходимо ID співрозмовника (не нас)
+                    if chat_data.get("participants"):
+                        for participant in chat_data["participants"]:
+                            if participant.get("userId") != current_user_id:
+                                participant_id = participant.get("userId")
+                                first_name = participant.get("firstName", "")
+                                last_name = participant.get("lastName", "")
+                                participant_name = (
+                                    f"{first_name} {last_name}".strip()
+                                    or "Unknown"
+                                )
+                                break
+
+                    if participant_id:
+                        # Шукаємо за source_url, що містить цей user_id
+                        source_mask = df["source_url"].str.contains(
+                            participant_id, na=False
+                        )
+                        if source_mask.any():
+                            mask = source_mask
+                            found_row = True
+                            print(
+                                f"       ✅ Знайдено запис за user_id: {participant_id}"
+                            )
+                        else:
+                            print(
+                                f"       ➕ Користувач {participant_name} ({participant_id}) не знайдений у CSV, створюємо новий запис..."
+                            )
+
+                            # Створюємо новий рядок для цього користувача
+                            new_row = {
+                                "full_name": participant_name,
+                                "company_name": "Unknown",
+                                "position": "Unknown",
+                                "source_url": f"https://sbcconnect.com/event/sbc-summit-2025/attendees/{participant_id}",
+                                "connected": "",
+                                "Follow-up": "true",
+                                "valid": "Valid",
+                                "author": "System",  # Default author since we don't have access to accounts here
+                                "chat_id": chat_id,
+                            }
+
+                            # Додаємо новий рядок до DataFrame
+                            new_df = pd.DataFrame([new_row])
+                            df = pd.concat([df, new_df], ignore_index=True)
+
+                            # Оновлюємо mask для нового рядка
+                            mask = df.index == (len(df) - 1)
+                            found_row = True
+                            print(
+                                f"       ✅ Створено новий запис для {participant_name}"
+                            )
+
+            if found_row:
+                # Handle different followup types appropriately
+                if followup_type == "conference_active":
+                    # For conference active messages, use dedicated column
+                    if "Conference Active Status" not in df.columns:
+                        df["Conference Active Status"] = ""
+                    df.loc[mask, "Conference Active Status"] = "sent"
+
+                    # Also set the general Follow-up status
+                    df.loc[mask, "Follow-up"] = "true"
+
+                    # Update chat_id if it was missing
+                    if "chat_id" not in df.columns:
+                        df["chat_id"] = ""
+                    df.loc[mask, "chat_id"] = chat_id
+
+                    # Update Follow-up type column to include conference_active
+                    if "Follow-up type" not in df.columns:
+                        df["Follow-up type"] = ""
+                    current_type = df.loc[mask, "Follow-up type"].iloc[0]
+                    if pd.isna(current_type) or str(current_type) == "":
+                        df.loc[mask, "Follow-up type"] = "conference_active"
+                    elif "conference_active" not in str(current_type):
+                        df.loc[mask, "Follow-up type"] = (
+                            f"{current_type},conference_active"
+                        )
+                else:
+                    # For other followup types, use the standard logic
+                    df.loc[mask, "Follow-up"] = "true"
+
+                    # Update chat_id if it was missing
+                    if "chat_id" not in df.columns:
+                        df["chat_id"] = ""
+                    df.loc[mask, "chat_id"] = chat_id
+
+                    # Оновлюємо Follow-up type колонку
+                    if "Follow-up type" not in df.columns:
+                        df["Follow-up type"] = ""
+                    df.loc[mask, "Follow-up type"] = (
+                        f"follow-up_{followup_type}"
+                    )
+
+                # ВАЖЛИВО: Записуємо дату відправки follow-up
+                kyiv_tz = ZoneInfo("Europe/Kiev")
+                current_date = datetime.now(kyiv_tz)
+                formatted_date = current_date.strftime("%d.%m.%Y")
+
+                # Додаємо колонку follow_up_date якщо її немає
+                if "follow_up_date" not in df.columns:
+                    df["follow_up_date"] = ""
+
+                df.loc[mask, "follow_up_date"] = formatted_date
+
+                # Зберігаємо оновлений файл
+                df.to_csv(csv_file, index=False, encoding="utf-8")
+
+                print(
+                    f"       📝 Follow-up статус оновлено: {followup_type}, дата: {formatted_date}"
+                )
+                return True
+            else:
+                print(
+                    f"       ❌ Не вдалося знайти або створити запис для chat_id {chat_id}"
+                )
+                return False
+
+        except ImportError:
+            print(
+                f"       ⚠️ pandas не встановлено, Follow-up статус не оновлено"
+            )
+            return False
         except Exception as e:
-            print(f"❌ Помилка оновлення CSV: {e}")
+            print(f"       ❌ Помилка оновлення Follow-up статусу: {e}")
+            import traceback
+
+            traceback.print_exc()
             return False
 
     def update_csv_response_status_by_chat_id(

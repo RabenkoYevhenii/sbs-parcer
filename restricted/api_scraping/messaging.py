@@ -849,7 +849,7 @@ class MessagingHandler:
     def check_message_already_sent_in_chat(
         self, chat_data: dict, followup_type: str, accounts: dict = None
     ) -> bool:
-        """Checks if a message of this type has already been sent in the chat"""
+        """Перевіряє чи вже було відправлено повідомлення цього типу в чаті"""
         if not chat_data or not isinstance(chat_data, dict):
             return False
 
@@ -875,25 +875,27 @@ class MessagingHandler:
         # Extract key phrases to check for
         key_phrases = []
         if isinstance(template, dict):
-            # Multi-language template, check all languages
+            # Multi-language template
             for lang_template in template.values():
-                if "flexify" in lang_template.lower():
-                    key_phrases.append("flexify")
-                if "stand" in lang_template.lower():
-                    key_phrases.append("stand")
+                # Extract distinctive phrases (without {name} placeholder)
+                clean_template = lang_template.replace("{name}", "").strip()
+                if len(clean_template) > 10:  # Only use substantial phrases
+                    key_phrases.append(
+                        clean_template[:30]
+                    )  # First 30 chars as key phrase
         else:
-            # Single template
-            if "flexify" in template.lower():
-                key_phrases.append("flexify")
-            if "stand" in template.lower():
-                key_phrases.append("stand")
+            # Single language template
+            clean_template = template.replace("{name}", "").strip()
+            if len(clean_template) > 10:
+                key_phrases.append(clean_template[:30])
 
         # Check our messages for these key phrases
         for msg in messages:
-            if msg.get("userId") == current_user_id:
-                message_text = msg.get("message", "").lower()
-                if any(phrase in message_text for phrase in key_phrases):
-                    return True
+            if msg.get("userId") == current_user_id and msg.get("message"):
+                message_text = msg.get("message", "")
+                for phrase in key_phrases:
+                    if phrase.lower() in message_text.lower():
+                        return True
 
         return False
 
@@ -905,25 +907,83 @@ class MessagingHandler:
         chat_data: dict = None,
         accounts: dict = None,
     ) -> bool:
-        """Checks if follow-up of this type has already been sent (CSV + messages)"""
+        """Перевіряє чи вже був відправлений follow-up цього типу з покращеною двохрівневою логікою"""
         try:
-            # Check CSV first
-            csv_already_sent = self.data_processor._check_followup_in_csv(
-                csv_file, chat_id, followup_type
-            )
+            import pandas as pd
 
-            # Check messages in chat
-            message_already_sent = False
+            # TIER 1: Швидка перевірка CSV (primary defense)
+            df = pd.read_csv(csv_file)
+
+            # Знаходимо рядок з цим chat_id
+            chat_row = df[df["chat_id"] == chat_id]
+
+            csv_says_sent = False
+            if not chat_row.empty:
+                # Перевіряємо статус цього followup_type
+                if followup_type == "conference_active":
+                    column_name = "Conference Active Status"
+                else:
+                    # Check both new column format and legacy format
+                    column_name = f"Follow_up_{followup_type}_status"
+                    if column_name not in df.columns:
+                        # Fallback to legacy "Follow-up type" column
+                        followup_type_col = chat_row["Follow-up type"].iloc[0]
+                        if pd.notna(
+                            followup_type_col
+                        ) and followup_type in str(followup_type_col):
+                            csv_says_sent = True
+
+                if column_name in df.columns and not csv_says_sent:
+                    status = chat_row[column_name].iloc[0]
+                    if pd.notna(status) and str(status).lower() in [
+                        "sent",
+                        "true",
+                        "1",
+                    ]:
+                        csv_says_sent = True
+
+            # Якщо CSV каже, що відправлено - довіряємо йому (оптимізація)
+            if csv_says_sent:
+                return True
+
+            # TIER 2: Перевірка фактичного контенту повідомлень (secondary defense)
             if chat_data:
-                message_already_sent = self.check_message_already_sent_in_chat(
+                message_says_sent = self.check_message_already_sent_in_chat(
                     chat_data, followup_type, accounts
                 )
 
-            return csv_already_sent or message_already_sent
+                # Якщо повідомлення показують, що було відправлено, але CSV не знає про це
+                if message_says_sent and not csv_says_sent:
+                    print(
+                        f"       🔄 Знайдено розбіжність: повідомлення показують відправлено, але CSV ні"
+                    )
+                    print(f"       📝 Оновлюємо CSV для синхронізації...")
+
+                    # Синхронізуємо CSV з фактичним станом повідомлень
+                    self.data_processor.update_csv_followup_status(
+                        csv_file, chat_id, followup_type, chat_data
+                    )
+
+                return message_says_sent
+
+            # Якщо немає даних чату, довіряємо CSV
+            return csv_says_sent
+
         except ImportError:
+            print(f"       ⚠️ Pandas не доступний, пропускаємо CSV перевірку")
+            # Fallback до перевірки повідомлень якщо pandas недоступний
+            if chat_data:
+                return self.check_message_already_sent_in_chat(
+                    chat_data, followup_type, accounts
+                )
             return False
         except Exception as e:
-            print(f"❌ Помилка перевірки відправленого follow-up: {e}")
+            print(f"       ⚠️ Помилка перевірки follow-up: {e}")
+            # В разі помилки, якщо є дані чату - перевіряємо їх
+            if chat_data:
+                return self.check_message_already_sent_in_chat(
+                    chat_data, followup_type, accounts
+                )
             return False
 
     def analyze_chat_for_responses(self, chat_data: Dict, accounts) -> Dict:
