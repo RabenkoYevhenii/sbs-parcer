@@ -270,42 +270,240 @@ class SBCAttendeesScraper:
             print("❌ Scraping cancelled")
 
     def handle_multi_account_messages(self):
-        """Handles message sending using messenger accounts"""
+        """Handles sending messages using one or more messenger accounts (full parity with original)"""
         print("\n👥 SEND MESSAGES - ACCOUNT SELECTION")
         print("=" * 40)
 
-        # Get list of all messenger accounts
+        # Get all messenger accounts
         messenger_accounts = []
         for account_key, account_info in self.accounts.items():
-            if account_info["role"] == "messaging":
+            if account_info["role"] == "messaging" and account_info.get("username"):
                 messenger_accounts.append(account_key)
 
-        print("Available messenger accounts:")
+        if not messenger_accounts:
+            print("❌ No messenger accounts configured!")
+            return
+
+        print("� Available messenger accounts:")
         for i, account_key in enumerate(messenger_accounts, 1):
             account_info = self.accounts[account_key]
-            print(f"{i}. {account_info['name']}")
+            print(f"   {i}. {account_key}: {account_info['name']} ({account_info['username']})")
 
-        print(
-            f"{len(messenger_accounts) + 1}. All messenger accounts (multi-account mode)"
-        )
+        # Show mode options
+        print("\n📋 Messaging mode:")
+        for i, account_key in enumerate(messenger_accounts, 1):
+            print(f"   {i}. 👤 Single account ({account_key})")
+        if len(messenger_accounts) > 1:
+            print(f"   A. 👥 All accounts (even split)")
+            print(f"   C. 🎯 Choose specific accounts (e.g. 1,3 or 2,3)")
 
-        choice = input(
-            f"➡️ Choose account (1-{len(messenger_accounts) + 1}): "
-        ).strip()
+        print(f"\n💡 For single account enter number (1-{len(messenger_accounts)})")
+        if len(messenger_accounts) > 1:
+            print(f"💡 For all accounts enter 'A'")
+            print(f"💡 For custom accounts enter 'C' or numbers separated by comma (e.g. 1,3)")
 
-        try:
-            choice_idx = int(choice) - 1
-            if choice_idx == len(messenger_accounts):
-                # Multi-account mode
-                self.handle_multi_account_bulk_messaging()
-            elif 0 <= choice_idx < len(messenger_accounts):
-                # Single account mode
-                selected_account = messenger_accounts[choice_idx]
-                self.handle_single_account_messaging(selected_account)
+        mode_choice = input("➡️ Your choice: ").strip().upper()
+        selected_accounts = []
+        selected_mode = ""
+
+        if mode_choice == "A" and len(messenger_accounts) > 1:
+            selected_accounts = messenger_accounts
+            selected_mode = "multi_messenger"
+        elif mode_choice == "C" and len(messenger_accounts) > 1:
+            account_choice = input(f"➡️ Enter account numbers separated by comma (1-{len(messenger_accounts)}): ").strip()
+            try:
+                account_numbers = [int(x.strip()) for x in account_choice.split(",")]
+                if all(1 <= num <= len(messenger_accounts) for num in account_numbers):
+                    selected_accounts = [messenger_accounts[num - 1] for num in account_numbers]
+                    selected_mode = "custom_multi" if len(selected_accounts) > 1 else f"single_{selected_accounts[0]}"
+                else:
+                    print("❌ Invalid account numbers. Operation cancelled.")
+                    return
+            except ValueError:
+                print("❌ Invalid format. Use numbers separated by comma (e.g. 1,3). Operation cancelled.")
+                return
+        elif "," in mode_choice:
+            try:
+                account_numbers = [int(x.strip()) for x in mode_choice.split(",")]
+                if all(1 <= num <= len(messenger_accounts) for num in account_numbers):
+                    selected_accounts = [messenger_accounts[num - 1] for num in account_numbers]
+                    selected_mode = "custom_multi" if len(selected_accounts) > 1 else f"single_{selected_accounts[0]}"
+                else:
+                    print("❌ Invalid account numbers. Operation cancelled.")
+                    return
+            except ValueError:
+                print("❌ Invalid format. Use numbers separated by comma (e.g. 1,3). Operation cancelled.")
+                return
+        elif mode_choice.isdigit():
+            choice_num = int(mode_choice)
+            if 1 <= choice_num <= len(messenger_accounts):
+                selected_accounts = [messenger_accounts[choice_num - 1]]
+                selected_mode = f"single_{selected_accounts[0]}"
             else:
-                print("❌ Invalid choice")
+                print("❌ Invalid account number. Operation cancelled.")
+                return
+        else:
+            print("❌ Invalid choice. Operation cancelled.")
+            return
+
+        # CSV file selection
+        data_dir = self.base_scraper.get_data_dir()
+        csv_files = []
+        if os.path.exists(data_dir):
+            for file in os.listdir(data_dir):
+                if file.endswith(".csv"):
+                    csv_files.append(file)
+        if not csv_files:
+            print(f"❌ No CSV files found in {data_dir}/")
+            return
+
+        print("\n� Available CSV files:")
+        for i, file in enumerate(csv_files, 1):
+            file_path = os.path.join(data_dir, file)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    count = sum(1 for row in reader)
+                print(f"   {i}. {file} ({count} contacts)")
+            except:
+                print(f"   {i}. {file} (unable to read)")
+
+        file_choice = input(f"➡️ Choose file (1-{len(csv_files)}): ").strip()
+        try:
+            file_index = int(file_choice) - 1
+            if 0 <= file_index < len(csv_files):
+                selected_file = os.path.join(data_dir, csv_files[file_index])
+                print(f"\n📁 Selected: {csv_files[file_index]}")
+            else:
+                print("❌ Invalid file selection")
+                return
         except ValueError:
             print("❌ Invalid input")
+            return
+
+        # Filter settings
+        print("\n🔧 FILTER SETTINGS")
+        print("=" * 30)
+        print("Available filters:")
+        print("1. Gaming vertical filter: Excludes 'land-based' companies (always enabled)")
+        print("2. Position filter: Only includes relevant positions like CEO, CFO, Payments, etc.")
+        position_filter_choice = input("➡️ Enable position filter? (y/n, default: y): ").strip().lower()
+        enable_position_filter = position_filter_choice != "n"
+        if enable_position_filter:
+            print("✅ Position filter enabled - will only target relevant positions")
+        else:
+            print("⚠️ Position filter disabled - will target ALL positions")
+
+        # Show filtered contact count
+        try:
+            user_data = self.data_processor.extract_user_data_from_csv(
+                selected_file,
+                apply_filters=True,
+                enable_position_filter=enable_position_filter,
+            )
+            total_contacts = len(user_data)
+            if total_contacts == 0:
+                print("❌ No users to process after applying filters")
+                print("💡 Try another file or check CSV structure")
+                if not enable_position_filter:
+                    print("💡 Or try enabling the position filter")
+                return
+        except Exception as e:
+            print(f"❌ Error processing CSV file: {e}")
+            fix_choice = input("➡️ Try to auto-fix CSV file? (y/n): ").lower()
+            if fix_choice == "y":
+                print("🔧 Attempting to fix file...")
+                if self.data_processor.fix_malformed_csv(selected_file):
+                    print("✅ File fixed, retrying...")
+                    try:
+                        user_data = self.data_processor.extract_user_data_from_csv(
+                            selected_file,
+                            apply_filters=True,
+                            enable_position_filter=enable_position_filter,
+                        )
+                        total_contacts = len(user_data)
+                        if total_contacts == 0:
+                            print("❌ No users to process after fixing")
+                            return
+                        else:
+                            print(f"✅ Loaded {total_contacts} contacts after fixing")
+                    except Exception as e2:
+                        print(f"❌ Still error after fixing: {e2}")
+                        return
+                else:
+                    print("❌ Could not fix file")
+                    return
+            else:
+                print("❌ Please check the file manually and try again")
+                return
+
+        # User limit
+        limit_input = input(f"➡️ User limit (default: all {total_contacts} users, or enter number): ").strip()
+        try:
+            user_limit = int(limit_input) if limit_input else None
+            if user_limit and user_limit > total_contacts:
+                print(f"⚠️ Limit {user_limit} exceeds available users ({total_contacts}), using all")
+                user_limit = None
+        except:
+            user_limit = None
+
+        # Show work distribution
+        actual_users = user_limit if user_limit else total_contacts
+        if selected_mode == "multi_messenger":
+            split = actual_users // len(selected_accounts)
+            print(f"\n📊 Work distribution for {actual_users} users:")
+            for idx, acc in enumerate(selected_accounts):
+                count = split if idx < len(selected_accounts) - 1 else actual_users - split * (len(selected_accounts) - 1)
+                print(f"   👤 {self.accounts[acc]['name']}: {count} contacts")
+        elif selected_mode == "custom_multi":
+            split = actual_users // len(selected_accounts)
+            print(f"\n� Work distribution for {actual_users} users:")
+            for idx, acc in enumerate(selected_accounts):
+                count = split if idx < len(selected_accounts) - 1 else actual_users - split * (len(selected_accounts) - 1)
+                print(f"   👤 {self.accounts[acc]['name']}: {count} contacts")
+        else:
+            acc = selected_accounts[0]
+            print(f"\n👤 Single account: {self.accounts[acc]['name']} will process {actual_users} users")
+
+        # Show message templates
+        print("\n💬 Message templates (random selection):")
+        for i, template in enumerate(self.messaging.follow_up_messages, 1):
+            preview = template.replace("{name}", "[NAME]")
+            preview_short = preview[:100] + ("..." if len(preview) > 100 else "")
+            print(f"   {i}. {preview_short}")
+        print(f"\n💬 Automatic follow-up message:")
+        print(f"   → {self.messaging.second_follow_up_message}")
+        print(f"\n⚠️ Will send random message template + automatic follow-up (5s delay) to users without existing chats")
+
+        # Delay
+        delay = input("➡️ Delay between contacts in seconds (default 8, includes 5s for follow-up): ").strip()
+        try:
+            delay_seconds = int(delay) if delay else 8
+        except:
+            delay_seconds = 8
+
+        # Final confirmation
+        if selected_mode == "multi_messenger":
+            mode_text = f"from all {len(selected_accounts)} accounts (even split)"
+        elif selected_mode == "custom_multi":
+            account_names = [self.accounts[acc]["name"] for acc in selected_accounts]
+            mode_text = f"from selected accounts: {', '.join(account_names)} (even split)"
+        else:
+            acc = selected_accounts[0]
+            mode_text = f"from single account ({self.accounts[acc]['name']})"
+        confirm = input(f"Start messaging {mode_text} for {actual_users} users with {delay_seconds}s delay? (y/n): ").lower()
+        if confirm != "y":
+            print("❌ Multi-messenger messaging cancelled")
+            return
+
+        # Call appropriate bulk messaging method
+        if selected_mode == "multi_messenger":
+            self.bulk_message_multi_account(selected_file, delay_seconds, user_limit, enable_position_filter)
+        elif selected_mode == "custom_multi":
+            self.bulk_message_custom_accounts(selected_file, selected_accounts, delay_seconds, user_limit, enable_position_filter)
+        else:
+            acc = selected_accounts[0]
+            self.bulk_message_single_account(selected_file, acc, delay_seconds, user_limit, enable_position_filter)
 
     def handle_single_account_messaging(self, account_key: str):
         """Handles messaging from a single account"""
@@ -357,230 +555,482 @@ class SBCAttendeesScraper:
         )
 
     def handle_multi_account_bulk_messaging(self):
-        """Handles bulk messaging across multiple accounts"""
-        print("\n📤 MULTI-ACCOUNT BULK MESSAGING")
-        print("=" * 50)
+        """Handles bulk messaging across multiple accounts with real logic and logging"""
+        print("\n============================================================")
+        print("📤 МУЛЬТИ-АКАУНТ РОЗСИЛКА ПОВІДОМЛЕНЬ")
+        print("============================================================\n")
 
-        csv_file = os.path.join(
-            self.base_scraper.get_data_dir(), "SBC - Attendees.csv"
-        )
-
+        csv_file = os.path.join(self.base_scraper.get_data_dir(), "SBC - Attendees.csv")
         if not os.path.exists(csv_file):
-            print(f"❌ CSV file not found: {csv_file}")
+            print(f"❌ CSV файл не знайдено: {csv_file}")
             return
 
-        # Get parameters
         try:
-            user_limit = input(
-                "Total user limit (empty for no limit): "
-            ).strip()
+            user_limit = input("Загальний ліміт користувачів (Enter для без ліміту): ").strip()
             user_limit = int(user_limit) if user_limit else None
 
-            delay = input(
-                "Delay between messages (default 3 seconds): "
-            ).strip()
+            delay = input("Затримка між повідомленнями (default 3 seconds): ").strip()
             delay_seconds = int(delay) if delay else 3
 
-            filter_choice = (
-                input("Enable position filter? (y/n, default y): ")
-                .strip()
-                .lower()
-            )
+            filter_choice = input("Включити фільтр позицій? (y/n, default y): ").strip().lower()
             enable_position_filter = filter_choice != "n"
-
         except ValueError:
-            print("❌ Invalid input")
+            print("❌ Некоректне введення")
             return
 
-        # Execute multi-account messaging (implementation would go here)
-        print("🚀 Starting multi-account messaging...")
-        # This would implement the multi-account distribution logic
+        # Get all messenger accounts
+        messenger_accounts = [k for k, v in self.accounts.items() if v["role"] == "messaging"]
+        if not messenger_accounts:
+            print("❌ Немає акаунтів для розсилки")
+            return
+
+        # Load user data from CSV
+        user_data = self.data_processor.extract_user_data_from_csv(csv_file, apply_filters=True, enable_position_filter=enable_position_filter)
+        if user_limit:
+            user_data = user_data[:user_limit]
+        print(f"📋 Всього користувачів для розсилки: {len(user_data)}")
+
+        # Distribute users among accounts
+        batches = [[] for _ in messenger_accounts]
+        for idx, user in enumerate(user_data):
+            batches[idx % len(messenger_accounts)].append(user)
+
+        total_sent = 0
+        total_skipped = 0
+        total_errors = 0
+
+        for i, account_key in enumerate(messenger_accounts):
+            print(f"\n🔄 Переключаємося на акаунт: {account_key} ({self.accounts[account_key]['name']})")
+            if not self.switch_account(account_key):
+                print(f"❌ Не вдалося переключитись на {account_key}")
+                continue
+
+            batch = batches[i]
+            print(f"📋 Користувачів для акаунта: {len(batch)}")
+            for j, user in enumerate(batch, 1):
+                full_name = user.get("full_name", "")
+                company_name = user.get("company_name", "")
+                print(f"\n� [{j}/{len(batch)}] {full_name} ({company_name})")
+                try:
+                    # Send message
+                    success = self.messaging.send_message_to_user(
+                        user.get("user_id"),
+                        self.messaging.follow_up_messages[0],
+                        full_name,
+                        company_name,
+                    )
+                    if success:
+                        print(f"       ✅ Успішно відправлено")
+                        total_sent += 1
+                    else:
+                        print(f"       ❌ Помилка відправки")
+                        total_errors += 1
+                except Exception as e:
+                    print(f"       ⚠️ Виняток: {e}")
+                    total_errors += 1
+                print(f"       ⏳ Чекаємо {delay_seconds} секунд...")
+                time.sleep(delay_seconds)
+
+        print(f"\n📊 ПІДСУМОК МУЛЬТИ-АКАУНТ РОЗСИЛКИ:")
+        print(f"   📨 Всього відправлено: {total_sent}")
+        print(f"   ❌ Помилок: {total_errors}")
 
     def handle_followup_campaigns(self):
-        """Handles follow-up campaigns"""
-        print("\n📞 FOLLOW-UP CAMPAIGNS")
+        """Handles follow-up campaigns (full parity with original)"""
+        print("\n📬 FOLLOW-UP CAMPAIGNS")
         print("=" * 40)
-        print("1. 📅 Weekly follow-up campaign")
-        print("2. 📅 Monthly follow-up campaign")
-        print("3. 👤 Follow-up by specific author")
-        print("4. 🔙 Back to main menu")
 
-        choice = input("\nSelect option (1-4): ").strip()
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        kyiv_tz = ZoneInfo("Europe/Kiev")
+        current_date = datetime.now(kyiv_tz)
+        sbc_date = self.sbc_start_date
+        days_until_sbc = (sbc_date - current_date).days
 
-        if choice == "1":
-            csv_file = input("Enter CSV file path: ").strip()
-            if os.path.exists(csv_file):
-                self.process_followup_campaigns_optimized(csv_file, "weekly")
+        print(f"📅 Current date: {current_date.strftime('%d.%m.%Y')}")
+        print(f"📅 SBC Summit date: {sbc_date.strftime('%d.%m.%Y')}")
+        print(f"⏰ Days until conference: {days_until_sbc}")
+
+        print("\n📋 Follow-up rules:")
+        print("   � Follow-up 1: 3 days after first message")
+        print("   📧 Follow-up 2: 7 days after first message")
+        print("   📧 Follow-up 3: 1 day before SBC Summit")
+
+        print("\n🔧 Mode:")
+        print("   1. � Optimized (CSV filter - fast)")
+        print("      • Analyzes only contacts with 'Sent' status and no response")
+        print("      • Filters by message author from CSV")
+        print("      • Checks dates and sends follow-up as per rules")
+        print("   2. � Full analysis (all chats - slow)")
+        print("      • Loads all chats from account")
+        print("      • Analyzes each chat for follow-up")
+        print("   3. � By author (auto-split by accounts)")
+        print("      • Splits contacts by 'author' field in CSV")
+        print("      • Uses corresponding account for each author")
+
+        mode_choice = input("➡️ Choose mode (1-3): ").strip()
+
+        if mode_choice == "1":
+            method_to_use = "optimized"
+            print("✅ Using optimized mode")
+            filter_choice = input("➡️ Use gaming vertical filters? (y/n): ").strip().lower()
+            use_filters = filter_choice == "y"
+            position_filter_choice = input("➡️ Use position filter (CEO, CFO, etc)? (y/n): ").strip().lower()
+            enable_position_filter = position_filter_choice == "y"
+            if enable_position_filter:
+                print("🎯 Position filter enabled")
             else:
-                print("❌ File not found")
-
-        elif choice == "2":
-            csv_file = input("Enter CSV file path: ").strip()
-            if os.path.exists(csv_file):
-                self.process_followup_campaigns_optimized(csv_file, "monthly")
+                print("⚠️ Position filter disabled - all positions included")
+        elif mode_choice == "2":
+            method_to_use = "full"
+            use_filters = False
+            enable_position_filter = False
+            print("✅ Using full analysis mode")
+        elif mode_choice == "3":
+            method_to_use = "by_author"
+            use_filters = False
+            print("✅ Using by author mode")
+            position_filter_choice = input("➡️ Use position filter (CEO, CFO, etc)? (y/n): ").strip().lower()
+            enable_position_filter = position_filter_choice == "y"
+            if enable_position_filter:
+                print("🎯 Position filter enabled for by author mode")
             else:
-                print("❌ File not found")
-
-        elif choice == "3":
-            csv_file = input("Enter CSV file path: ").strip()
-            author_name = input("Enter author name: ").strip()
-            if os.path.exists(csv_file) and author_name:
-                self.process_followup_campaigns_by_author(
-                    csv_file, author_name
-                )
-            else:
-                print("❌ Invalid input")
-
-        elif choice == "4":
-            return
+                print("⚠️ Position filter disabled - all positions included")
         else:
-            print("❌ Invalid choice")
+            print("❌ Invalid choice, using optimized mode")
+            method_to_use = "optimized"
+            use_filters = False
+            enable_position_filter = False
+
+        # Special handling for by_author method
+        if method_to_use == "by_author":
+            print("\n🚀 Starting follow-up campaigns by author...")
+            stats = self.process_followup_campaigns_by_author(enable_position_filter)
+            return
+
+        # Show available messenger accounts
+        messenger_accounts = [k for k, v in self.accounts.items() if v["role"] == "messaging"]
+        print(f"\n🔧 Available messenger accounts:")
+        for i, acc_key in enumerate(messenger_accounts, 1):
+            acc = self.accounts[acc_key]
+            print(f"   {i}. {acc['name']} ({acc['username']})")
+        print(f"   {len(messenger_accounts)+1}. All accounts sequentially")
+
+        account_choice = input(f"➡️ Choose account for processing (1-{len(messenger_accounts)+1}): ").strip()
+        try:
+            if account_choice == str(len(messenger_accounts)+1):
+                print("\n🔄 Processing with all accounts sequentially...")
+                combined_stats = {}
+                for idx, acc_key in enumerate(messenger_accounts, 1):
+                    print("\n" + "=" * 50)
+                    print(f"� MESSENGER {idx}")
+                    print("=" * 50)
+                    if method_to_use == "optimized":
+                        stats = self.process_followup_campaigns_optimized(acc_key, use_filters, enable_position_filter)
+                    else:
+                        stats = self.process_followup_campaigns(acc_key)
+                    for key in stats:
+                        combined_stats[key] = combined_stats.get(key, 0) + stats.get(key, 0)
+                print(f"\n📊 OVERALL STATISTICS:")
+                print(f"   📋 Chats analyzed: {combined_stats.get('analyzed', 0)}")
+                if method_to_use == "full":
+                    print(f"   💾 chat_id stored: {combined_stats.get('chat_ids_stored', 0)}")
+                print(f"   ✅ With responses: {combined_stats.get('has_responses', 0)}")
+                print(f"   📧 Follow-up 3 days: {combined_stats.get('day_3_sent', 0)}")
+                print(f"   📧 Follow-up 7 days: {combined_stats.get('day_7_sent', 0)}")
+                print(f"   📧 Final follow-up: {combined_stats.get('final_sent', 0)}")
+                print(f"   ❌ Errors: {combined_stats.get('errors', 0)}")
+                total_sent = (
+                    combined_stats.get("day_3_sent", 0)
+                    + combined_stats.get("day_7_sent", 0)
+                    + combined_stats.get("final_sent", 0)
+                )
+                print(f"   📈 Total sent: {total_sent}")
+            elif account_choice.isdigit() and 1 <= int(account_choice) <= len(messenger_accounts):
+                acc_key = messenger_accounts[int(account_choice)-1]
+                if method_to_use == "optimized":
+                    stats = self.process_followup_campaigns_optimized(acc_key, use_filters, enable_position_filter)
+                else:
+                    stats = self.process_followup_campaigns(acc_key)
+            else:
+                print("❌ Invalid choice")
+                return
+        except Exception as e:
+            print(f"❌ Error running follow-up campaign: {e}")
 
     def handle_conference_followup(self):
-        """Handles conference follow-up for positive conversations"""
-        print("\n🎯 CONFERENCE FOLLOWUP")
-        print("=" * 40)
+        """Handles conference followup for positive conversations (full parity with original)"""
+        print("\n👁️ CONFERENCE FOLLOWUP FOR POSITIVE CONVERSATIONS")
+        print("=" * 60)
+        print("Цей режим:")
+        print("• Перевіряє всі messenger акаунти")
+        print("• Аналізує чати з відповідями")
+        print("• Визначає мову повідомлень")
+        print("• Розпізнає позитивний сентимент")
+        print("• Відправляє conference followup тільки для позитивних розмов")
+        print("=" * 60)
 
-        default_path = "restricted/data/SBC - Attendees.csv"
-        csv_file = input(
-            f"Enter CSV file path (default: {default_path}): "
-        ).strip()
-
-        # Use default if empty input
-        if not csv_file:
-            csv_file = default_path
-
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
         if not os.path.exists(csv_file):
-            print("❌ File not found")
+            print(f"❌ Main CSV file not found: {csv_file}")
+            print("   First run 'Check for responses' to populate response data")
             return
 
-        confirm = input(
-            "Process positive conversations for conference followup? (y/n): "
-        ).lower()
-        if confirm == "y":
-            stats = self.messaging.process_positive_conversation_followups(
-                csv_file, self.accounts
-            )
-            print(f"\n✅ Conference followup campaign completed!")
-            print(f"📨 Sent: {stats.get('conference_followups_sent', 0)}")
-        else:
-            print("❌ Operation cancelled")
+        print(f"📁 Використовуємо CSV: {csv_file}")
+
+        # Show current CSV status for responses
+        print("\n📊 Поточний статус CSV:")
+        response_stats = self.show_csv_status_for_responses(csv_file)
+        if response_stats.get("with_responses", 0) == 0:
+            print("❌ Немає чатів з відповідями для аналізу")
+            print("   Спочатку запустіть 'Check for responses and update CSV status'")
+            return
+
+        print(f"\n📬 Знайдено {response_stats['with_responses']} чатів з відповідями")
+
+        confirm = input("\n➡️ Продовжити з conference followup кампанією? (y/n): ").lower()
+        if confirm != "y":
+            print("❌ Операцію скасовано")
+            return
+
+        try:
+            print(f"\n🚀 Запускаємо conference followup кампанію...")
+            stats = self.messaging.process_positive_conversation_followups(csv_file, self.accounts)
+            if stats.get("error"):
+                print("❌ Кампанія завершена з помилками")
+            else:
+                print(f"\n✅ КАМПАНІЯ ЗАВЕРШЕНА УСПІШНО!")
+                print(f"📈 Результати:")
+                print(f"   📬 Чатів проаналізовано: {stats.get('total_chats_checked', 0)}")
+                print(f"   ✅ Позитивних розмов: {stats.get('positive_conversations', 0)}")
+                print(f"   📨 Conference followup відправлено: {stats.get('conference_followups_sent', 0)}")
+                if stats.get("positive_conversations", 0) > 0:
+                    success_rate = (
+                        stats.get("conference_followups_sent", 0)
+                        / stats.get("positive_conversations", 0)
+                    ) * 100
+                    print(f"   📊 Успішність: {success_rate:.1f}%")
+        except Exception as e:
+            print(f"❌ Помилка виконання conference followup кампанії: {e}")
+            import traceback
+            traceback.print_exc()
 
     def handle_check_responses(self):
-        """Handles checking responses and updating CSV status"""
-        print("\n📬 CHECK RESPONSES")
+        """Handles checking responses and updating CSV status (full parity with original)"""
+        print("\n📬 CHECK FOR RESPONSES IN ALL CHATS (OPTIMIZED)")
         print("=" * 40)
 
-        csv_file = input("Enter CSV file path: ").strip()
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
         if not os.path.exists(csv_file):
-            print("❌ File not found")
+            print(f"❌ Main CSV file not found: {csv_file}")
+            print("   First run 'Scrape new contacts' to create the file")
             return
 
-        confirm = input("Check all responses and update CSV? (y/n): ").lower()
+        # Show CSV statistics before starting
+        print("📊 CSV статистика:")
+        csv_stats = self.show_csv_status_for_responses(csv_file)
+        if csv_stats:
+            print(f"   📋 Всього записів: {csv_stats['total_records']}")
+            print(f"   📤 'Sent': {csv_stats['sent_status']}")
+            print(f"   ✅ 'Sent Answer': {csv_stats['sent_answer_status']}")
+            print(f"   📨 З 'answer': {csv_stats['answer_status']}")
+            print(f"   📭 Порожні: {csv_stats['empty_status']}")
+            print(f"   ✓ 'True': {csv_stats['true_status']}")
+            print(f"   💬 З chat_id: {csv_stats['has_chat_id']}")
+            print(f"   🔍 Потребують перевірки: {csv_stats['needs_checking']}")
+
+        print(f"\n📁 CSV file: {csv_file}")
+        print("📋 ОПТИМІЗОВАНИЙ процес - перевіряє ТІЛЬКИ чати контактів зі статусом:")
+        print("   ✅ 'Sent' (відправлено повідомлення)")
+        print("   ✅ Порожнє значення")
+        print("   ✅ 'True'")
+        print("   ✅ І у яких є chat_id (встановлений контакт)")
+        print("\n🚫 НЕ перевіряє:")
+        print("   ❌ Будь-який статус з 'answer' (вже є відповідь)")
+        print("   ❌ Записи без chat_id")
+        print("   ❌ Групові чати")
+
+        print("\n🔧 Optimized Process:")
+        print("   1. 🔍 Фільтрація CSV за статусом (тільки релевантні записи)")
+        print("   2. 📬 Check only filtered chats from messenger1 account")
+        print("   3. 📬 Check only filtered chats from messenger2 account")
+        print("   4. 📝 Update CSV status to 'Sent Answer' for responded contacts")
+        print("   5. 🏷️ Set Follow-up column to 'Answer' for responded contacts")
+
+        print(f"\n👥 Messenger accounts to check:")
+        messenger_accounts = [k for k, v in self.accounts.items() if v["role"] == "messaging"]
+        for account_key in messenger_accounts:
+            if account_key in self.accounts:
+                account = self.accounts[account_key]
+                print(f"   • {account['name']} ({account['username']})")
+            else:
+                print(f"   ⚠️ {account_key} - not configured")
+
+        if csv_stats.get("needs_checking", 0) == 0:
+            print("\n✅ Немає записів для перевірки! Всі контакти вже оброблені.")
+            return
+
+        confirm = input(f"\n🤔 Proceed with checking {csv_stats.get('needs_checking', 0)} filtered chats? (y/n): ").lower()
         if confirm == "y":
-            stats = self.messaging.check_all_responses_and_update_csv(
-                csv_file, self.accounts
-            )
-            print(f"\n✅ Response checking completed!")
-            print(f"📬 Responses found: {stats.get('responses_found', 0)}")
-            print(f"📝 CSV updated: {stats.get('csv_updated', 0)}")
+            try:
+                print(f"\n🚀 Starting optimized response check for {csv_stats.get('needs_checking', 0)} chats...")
+                stats = self.messaging.check_all_responses_and_update_csv(csv_file, self.accounts)
+                if "error" in stats:
+                    print("❌ Process failed")
+                else:
+                    print("\n✅ Response check completed successfully!")
+                    print("\n� Оновлена статистика:")
+                    new_stats = self.show_csv_status_for_responses(csv_file)
+                    if new_stats:
+                        old_answered = csv_stats.get("sent_answer_status", 0)
+                        new_answered = new_stats.get("sent_answer_status", 0)
+                        increase = new_answered - old_answered
+                        print(f"   ✅ 'Sent Answer': {old_answered} → {new_answered} (+{increase})")
+                        print(f"   🔍 Потребують перевірки: {csv_stats.get('needs_checking', 0)} → {new_stats.get('needs_checking', 0)}")
+            except Exception as e:
+                print(f"❌ Error during response check: {e}")
+                import traceback
+                traceback.print_exc()
         else:
-            print("❌ Operation cancelled")
+            print("❌ Response check cancelled")
 
     def handle_update_csv_contacts(self):
-        """Handles updating existing CSV with contacts"""
-        print("\n📝 UPDATE CSV CONTACTS")
+        """Handles updating existing CSV with contacts (full parity with original)"""
+        print("\n� UPDATE EXISTING CSV WITH CONTACTS")
         print("=" * 40)
-        print("Not yet implemented in refactored version")
+
+        csv_file = os.path.join(self.get_data_dir(), "SBC - Attendees.csv")
+        if not os.path.exists(csv_file):
+            print(f"❌ Main CSV file not found: {csv_file}")
+            print("   First run 'Scrape new contacts' to create the file")
+            return
+
+        print(f"📁 File to update: {csv_file}")
+        print("📋 This will extract contacts from introduction text for profiles")
+        print("   that don't have contacts in the 'other_contacts' column yet.")
+
+        confirm = input("\n🤔 Proceed with contact extraction? (y/n): ").lower()
+        if confirm == "y":
+            self.update_existing_csv_with_contacts(csv_file)
+        else:
+            print("❌ Contact extraction cancelled")
 
     def handle_excluded_companies(self):
-        """Handles excluded companies management"""
-        print("\n🚫 MANAGE EXCLUDED COMPANIES")
-        print("=" * 40)
-
+        """Handles excluded companies management (full parity with original)"""
         while True:
-            print("\n📋 OPTIONS:")
-            print("1. 📄 Show excluded companies list")
-            print("2. 🔄 Reload excluded companies from file")
-            print("3. 🧪 Test company exclusion")
-            print("4. 🔙 Back to main menu")
+            print("\n🚫 УПРАВЛІННЯ ВИКЛЮЧЕНИМИ КОМПАНІЯМИ")
+            print("=" * 40)
+            count = len(self.company_filter.excluded_companies) if hasattr(self.company_filter, 'excluded_companies') else 0
+            print(f"� Поточно виключено: {count} компаній")
+            print("1. � Показати список виключених компаній")
+            print("2. 🧪 Тестувати компанію")
+            print("3. 🔄 Перезавантажити список з файлу")
+            print("4. ↩️ Повернутися до головного меню")
 
-            choice = input("➡️ Choose option (1-4): ").strip()
+            choice = input("➡️ Виберіть опцію (1-4): ").strip()
 
             if choice == "1":
                 self.company_filter.show_excluded_companies()
+                input("\n⏎ Натисніть Enter для продовження...")
             elif choice == "2":
-                self.company_filter.reload_excluded_companies()
-                print("✅ Excluded companies list reloaded")
-            elif choice == "3":
-                company_name = input("Enter company name to test: ").strip()
+                company_name = input("\n🏢 Введіть назву компанії для тесту: ").strip()
                 if company_name:
                     self.company_filter.test_company_exclusion(company_name)
+                else:
+                    print("❌ Назва компанії не може бути порожньою")
+                input("\n⏎ Натисніть Enter для продовження...")
+            elif choice == "3":
+                print("🔄 Перезавантажуємо список виключених компаній...")
+                old_count = count
+                self.company_filter.reload_excluded_companies()
+                new_count = len(self.company_filter.excluded_companies) if hasattr(self.company_filter, 'excluded_companies') else 0
+                print(f"✅ Готово! Компаній: {old_count} → {new_count}")
+                input("\n⏎ Натисніть Enter для продовження...")
             elif choice == "4":
                 break
             else:
-                print("❌ Invalid choice. Please select 1-4.")
+                print("❌ Невірний вибір. Виберіть 1-4.")
+                input("\n⏎ Натисніть Enter для продовження...")
 
     def show_account_status(self):
-        """Shows account status information"""
+        """Shows account status information (full parity with original)"""
         print("\n📊 ACCOUNT STATUS")
         print("=" * 40)
-        print(
-            f"🔗 Browser connected: {'Yes' if self.base_scraper.page else 'No'}"
-        )
-        print(
-            f"🔑 Logged in: {'Yes' if self.base_scraper.is_logged_in else 'No'}"
-        )
-        print(f"👤 Current account: {self.base_scraper.current_account}")
+        print("=" * 40)
+        current = self.base_scraper.current_account if hasattr(self.base_scraper, 'current_account') else None
+        if current:
+            print(f"� Currently active: {self.accounts[current]['name']}")
+        else:
+            print("� Currently active: None")
 
-        if self.base_scraper.current_account:
-            account_info = self.accounts[self.base_scraper.current_account]
-            print(f"📧 Username: {account_info['username']}")
-            print(f"🎭 Role: {account_info['role']}")
-            print(f"🆔 User ID: {account_info['user_id']}")
+        print("\n📋 All accounts configuration:")
+        for key, account in self.accounts.items():
+            status = "🟢 ACTIVE" if key == current else "⭕ INACTIVE"
+            role_emoji = "🔍" if account["role"] == "scraping" else "💬"
+            is_configured = (
+                account.get("username")
+                and not str(account["username"]).startswith(("MESSENGER", "your_"))
+                and account.get("password")
+                and not str(account["password"]).startswith(("MESSENGER", "your_"))
+                and account.get("user_id")
+                and not str(account["user_id"]).startswith(("MESSENGER", "your_"))
+            )
+            config_status = "✅ CONFIGURED" if is_configured else "❌ NOT CONFIGURED"
+            print(f"   {role_emoji} {key}: {account['name']}")
+            print(f"      📧 Email: {account['username']}")
+            print(f"      🎭 Role: {account['role']}")
+            print(f"      🔄 Status: {status}")
+            print(f"      ⚙️ Config: {config_status}")
+            print()
 
-        print(f"\n📁 Data directory: {self.base_scraper.get_data_dir()}")
-        csv_file = os.path.join(
-            self.base_scraper.get_data_dir(), "SBC - Attendees.csv"
-        )
-        print(
-            f"📄 Main CSV exists: {'Yes' if os.path.exists(csv_file) else 'No'}"
-        )
+        print("ℹ️ Roles:")
+        print("   🔍 scraper - Used for scraping new contacts")
+        print("   💬 messenger1/messenger2/messenger3 - Used for sending messages")
+        print("\n💡 To configure accounts, edit your .env file with real credentials")
+        count = len(self.company_filter.excluded_companies) if hasattr(self.company_filter, 'excluded_companies') else 0
+        print(f"\n🚫 Company Exclusions: {count} companies loaded")
 
     def run_update(self):
-        """Runs the attendee update process"""
-        print("🚀 Starting attendee scraping process...")
+        """Runs the attendee update process with detailed logging and robust comparison"""
+        print("\n============================================================")
+        print("🔄 ОНОВЛЕННЯ БАЗИ УЧАСНИКІВ SBC SUMMIT 2025")
+        print("============================================================\n")
 
-        # Get all advanced search results
-        print("📥 Получаем все результаты поиска...")
-        search_results = self.base_scraper.get_all_advanced_search_results()
+        print("📡 Етап 1: Завантаження даних з advanced search...")
+        all_results = []
+        batch_size = 2000
+        total_fetched = 0
+        for from_index in range(0, 20000, batch_size):
+            print(f"📥 Завантажуємо з індексу {from_index}...")
+            batch = self.base_scraper.advanced_search(from_index=from_index, size=batch_size)
+            if not batch:
+                print(f"   ❌ Не вдалося отримати дані з індексу {from_index}")
+                break
+            all_results.extend(batch)
+            total_fetched += len(batch)
+            print(f"   ✅ Отримано {len(batch)} записів (всього: {total_fetched})")
+            if len(batch) < batch_size:
+                print(f"   📊 Досягнуто кінця (отримано {len(batch)} < {batch_size})")
+                break
+        print(f"✅ Всього знайдено: {len(all_results)} учасників\n")
 
-        if not search_results:
-            print("❌ No search results obtained")
-            return
-
-        print(f"✅ Получено {len(search_results)} результатов поиска")
-
-        # Load existing attendees
-        csv_file = os.path.join(
-            self.base_scraper.get_data_dir(), "SBC - Attendees.csv"
-        )
+        print("📋 Етап 2: Порівняння з існуючою базою...")
+        csv_file = os.path.join(self.base_scraper.get_data_dir(), "SBC - Attendees.csv")
         existing_keys = self.load_existing_attendees(csv_file)
+        print(f"📋 Завантажено {len(existing_keys)} існуючих записів з {csv_file}")
 
-        # Find new attendees
-        new_attendees = self.find_new_attendees(search_results, existing_keys)
+        new_attendees = self.find_new_attendees(all_results, existing_keys)
+        print(f"🆕 Знайдено нових: {len(new_attendees)} учасників\n")
 
         if not new_attendees:
-            print("✅ No new attendees found")
+            print("✅ Немає нових учасників для додавання")
             return
 
-        print(f"🆕 Found {len(new_attendees)} new attendees")
-
-        # Process new attendees to get detailed info
+        print("🔍 Етап 3: Отримання детальних даних...")
         detailed_attendees = self.process_new_attendees(new_attendees)
 
-        # Save new attendees
         self.save_new_attendees(detailed_attendees, csv_file)
+        print(f"\n✅ Додавання нових учасників завершено. Всього додано: {len(detailed_attendees)}")
 
     def load_existing_attendees(self, csv_file=None):
         """Loads existing attendees from CSV"""
