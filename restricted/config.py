@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     messenger3_password: str = Field(default="", env="MESSENGER3_PASSWORD")
     messenger3_user_id: str = Field(default="", env="MESSENGER3_USER_ID")
 
+    # Account Credentials - Affiliate Account
+    affiliate_username: str = Field(default="", env="AFFILIATE_USERNAME")
+    affiliate_password: str = Field(default="", env="AFFILIATE_PASSWORD")
+    affiliate_user_id: str = Field(default="", env="AFFILIATE_USER_ID")
+
     # URLs
     sbc_login_url: str = Field(
         default="https://sbcconnect.com", env="SBC_LOGIN_URL"

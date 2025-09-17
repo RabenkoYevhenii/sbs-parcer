@@ -158,6 +158,10 @@ class CompanyFilter:
             excluded_normalized = excluded_company["normalized"]
             excluded_original = excluded_company["original"]
 
+            # Skip comparison for very short company names
+            if len(normalized_input) < 3 or len(excluded_normalized) < 3:
+                continue
+
             # Direct match
             if normalized_input == excluded_normalized:
                 return True, excluded_original, 1.0

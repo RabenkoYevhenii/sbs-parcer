@@ -261,10 +261,13 @@ class SBCAttendeesScraper:
             if normalized_input == excluded_company["normalized"]:
                 return True, excluded_company["original"], 1.0
 
-            # Check if one contains the other
+            # Check if one contains the other only if the length difference is small
             if (
-                normalized_input in excluded_company["normalized"]
-                or excluded_company["normalized"] in normalized_input
+                abs(len(normalized_input) - len(excluded_company["normalized"])) <= 3
+                and (
+                    normalized_input in excluded_company["normalized"]
+                    or excluded_company["normalized"] in normalized_input
+                )
             ):
 
                 # Calculate similarity for containment
