@@ -2842,7 +2842,11 @@ class SBCAttendeesScraper:
             return False
 
     def update_csv_followup_status(
-        self, csv_file: str, chat_id: str, followup_type: str, chat_data: dict = None
+        self,
+        csv_file: str,
+        chat_id: str,
+        followup_type: str,
+        chat_data: dict = None,
     ):
         """Оновлює статус Follow-up в CSV файлі після відправки з підтримкою conference_active та створення нових записів"""
         try:
@@ -2859,14 +2863,18 @@ class SBCAttendeesScraper:
                 found_row = True
                 print(f"       📋 Знайдено запис за chat_id: {chat_id}")
             else:
-                print(f"       🔍 Запис з chat_id {chat_id} не знайдено, шукаємо за user_id...")
-                
+                print(
+                    f"       🔍 Запис з chat_id {chat_id} не знайдено, шукаємо за user_id..."
+                )
+
                 # Якщо chat_data надано, спробуємо знайти за user_id з учасників чату
                 if chat_data:
-                    current_user_id = self.accounts[self.current_account]["user_id"]
+                    current_user_id = self.accounts[self.current_account][
+                        "user_id"
+                    ]
                     participant_id = None
                     participant_name = "Unknown"
-                    
+
                     # Знаходимо ID співрозмовника (не нас)
                     if chat_data.get("participants"):
                         for participant in chat_data["participants"]:
@@ -2874,40 +2882,55 @@ class SBCAttendeesScraper:
                                 participant_id = participant.get("userId")
                                 first_name = participant.get("firstName", "")
                                 last_name = participant.get("lastName", "")
-                                participant_name = f"{first_name} {last_name}".strip() or "Unknown"
+                                participant_name = (
+                                    f"{first_name} {last_name}".strip()
+                                    or "Unknown"
+                                )
                                 break
-                    
+
                     if participant_id:
                         # Шукаємо за source_url, що містить цей user_id
-                        source_mask = df["source_url"].str.contains(participant_id, na=False)
+                        source_mask = df["source_url"].str.contains(
+                            participant_id, na=False
+                        )
                         if source_mask.any():
                             mask = source_mask
                             found_row = True
-                            print(f"       ✅ Знайдено запис за user_id: {participant_id}")
+                            print(
+                                f"       ✅ Знайдено запис за user_id: {participant_id}"
+                            )
                         else:
-                            print(f"       ➕ Користувач {participant_name} ({participant_id}) не знайдений у CSV, створюємо новий запис...")
-                            
+                            print(
+                                f"       ➕ Користувач {participant_name} ({participant_id}) не знайдений у CSV, створюємо новий запис..."
+                            )
+
                             # Створюємо новий рядок для цього користувача
                             new_row = {
                                 "full_name": participant_name,
                                 "company_name": "Unknown",
-                                "position": "Unknown", 
+                                "position": "Unknown",
                                 "source_url": f"https://sbcconnect.com/event/sbc-summit-2025/attendees/{participant_id}",
                                 "connected": "",
                                 "Follow-up": "true",
                                 "valid": "Valid",
-                                "author": self.accounts[self.current_account]["name"].split("(")[0].strip(),
-                                "chat_id": chat_id
+                                "author": self.accounts[self.current_account][
+                                    "name"
+                                ]
+                                .split("(")[0]
+                                .strip(),
+                                "chat_id": chat_id,
                             }
-                            
+
                             # Додаємо новий рядок до DataFrame
                             new_df = pd.DataFrame([new_row])
                             df = pd.concat([df, new_df], ignore_index=True)
-                            
+
                             # Оновлюємо mask для нового рядка
                             mask = df.index == (len(df) - 1)
                             found_row = True
-                            print(f"       ✅ Створено новий запис для {participant_name}")
+                            print(
+                                f"       ✅ Створено новий запис для {participant_name}"
+                            )
 
             if found_row:
                 # Handle different followup types appropriately
@@ -2916,15 +2939,15 @@ class SBCAttendeesScraper:
                     if "Conference Active Status" not in df.columns:
                         df["Conference Active Status"] = ""
                     df.loc[mask, "Conference Active Status"] = "sent"
-                    
+
                     # Also set the general Follow-up status
                     df.loc[mask, "Follow-up"] = "true"
-                    
+
                     # Update chat_id if it was missing
                     if "chat_id" not in df.columns:
                         df["chat_id"] = ""
                     df.loc[mask, "chat_id"] = chat_id
-                    
+
                     # Update Follow-up type column to include conference_active
                     if "Follow-up type" not in df.columns:
                         df["Follow-up type"] = ""
@@ -2932,20 +2955,24 @@ class SBCAttendeesScraper:
                     if pd.isna(current_type) or str(current_type) == "":
                         df.loc[mask, "Follow-up type"] = "conference_active"
                     elif "conference_active" not in str(current_type):
-                        df.loc[mask, "Follow-up type"] = f"{current_type},conference_active"
+                        df.loc[mask, "Follow-up type"] = (
+                            f"{current_type},conference_active"
+                        )
                 else:
                     # For other followup types, use the standard logic
                     df.loc[mask, "Follow-up"] = "true"
-                    
+
                     # Update chat_id if it was missing
                     if "chat_id" not in df.columns:
                         df["chat_id"] = ""
                     df.loc[mask, "chat_id"] = chat_id
-                    
+
                     # Оновлюємо Follow-up type колонку
                     if "Follow-up type" not in df.columns:
                         df["Follow-up type"] = ""
-                    df.loc[mask, "Follow-up type"] = f"follow-up_{followup_type}"
+                    df.loc[mask, "Follow-up type"] = (
+                        f"follow-up_{followup_type}"
+                    )
 
                 # ВАЖЛИВО: Записуємо дату відправки follow-up
                 kyiv_tz = ZoneInfo("Europe/Kiev")
@@ -2966,7 +2993,9 @@ class SBCAttendeesScraper:
                 )
                 return True
             else:
-                print(f"       ❌ Не вдалося знайти або створити запис для chat_id {chat_id}")
+                print(
+                    f"       ❌ Не вдалося знайти або створити запис для chat_id {chat_id}"
+                )
                 return False
 
         except ImportError:
@@ -2977,6 +3006,7 @@ class SBCAttendeesScraper:
         except Exception as e:
             print(f"       ❌ Помилка оновлення Follow-up статусу: {e}")
             import traceback
+
             traceback.print_exc()
             return False
 
@@ -3040,10 +3070,10 @@ class SBCAttendeesScraper:
 
             # TIER 1: Швидка перевірка CSV (primary defense)
             df = pd.read_csv(csv_file)
-            
+
             # Знаходимо рядок з цим chat_id
-            chat_row = df[df['chat_id'] == chat_id]
-            
+            chat_row = df[df["chat_id"] == chat_id]
+
             csv_says_sent = False
             if not chat_row.empty:
                 # Перевіряємо статус цього followup_type
@@ -3055,32 +3085,44 @@ class SBCAttendeesScraper:
                     if column_name not in df.columns:
                         # Fallback to legacy "Follow-up type" column
                         followup_type_col = chat_row["Follow-up type"].iloc[0]
-                        if pd.notna(followup_type_col) and followup_type in str(followup_type_col):
+                        if pd.notna(
+                            followup_type_col
+                        ) and followup_type in str(followup_type_col):
                             csv_says_sent = True
-                
+
                 if column_name in df.columns and not csv_says_sent:
                     status = chat_row[column_name].iloc[0]
-                    if pd.notna(status) and str(status).lower() in ['sent', 'true', '1']:
+                    if pd.notna(status) and str(status).lower() in [
+                        "sent",
+                        "true",
+                        "1",
+                    ]:
                         csv_says_sent = True
-            
+
             # Якщо CSV каже, що відправлено - довіряємо йому (оптимізація)
             if csv_says_sent:
                 return True
-            
+
             # TIER 2: Перевірка фактичного контенту повідомлень (secondary defense)
             if chat_data:
-                message_says_sent = self.check_message_already_sent_in_chat(chat_data, followup_type)
-                
+                message_says_sent = self.check_message_already_sent_in_chat(
+                    chat_data, followup_type
+                )
+
                 # Якщо повідомлення показують, що було відправлено, але CSV не знає про це
                 if message_says_sent and not csv_says_sent:
-                    print(f"       🔄 Знайдено розбіжність: повідомлення показують відправлено, але CSV ні")
+                    print(
+                        f"       🔄 Знайдено розбіжність: повідомлення показують відправлено, але CSV ні"
+                    )
                     print(f"       📝 Оновлюємо CSV для синхронізації...")
-                    
+
                     # Синхронізуємо CSV з фактичним станом повідомлень
-                    self.update_csv_followup_status(csv_file, chat_id, followup_type, chat_data)
-                    
+                    self.update_csv_followup_status(
+                        csv_file, chat_id, followup_type, chat_data
+                    )
+
                 return message_says_sent
-            
+
             # Якщо немає даних чату, довіряємо CSV
             return csv_says_sent
 
@@ -3088,13 +3130,17 @@ class SBCAttendeesScraper:
             print(f"       ⚠️ Pandas не доступний, пропускаємо CSV перевірку")
             # Fallback до перевірки повідомлень якщо pandas недоступний
             if chat_data:
-                return self.check_message_already_sent_in_chat(chat_data, followup_type)
+                return self.check_message_already_sent_in_chat(
+                    chat_data, followup_type
+                )
             return False
         except Exception as e:
             print(f"       ⚠️ Помилка перевірки follow-up: {e}")
             # В разі помилки, якщо є дані чату - перевіряємо їх
             if chat_data:
-                return self.check_message_already_sent_in_chat(chat_data, followup_type)
+                return self.check_message_already_sent_in_chat(
+                    chat_data, followup_type
+                )
             return False
 
     def process_positive_conversation_followups(
@@ -3325,7 +3371,10 @@ class SBCAttendeesScraper:
 
                             # Update CSV with followup status
                             self.update_csv_followup_status(
-                                csv_file, chat_id, "conference_active", chat_data
+                                csv_file,
+                                chat_id,
+                                "conference_active",
+                                chat_data,
                             )
 
                         else:
@@ -5145,7 +5194,9 @@ class SBCAttendeesScraper:
                 account_info["role"] == "messaging"
                 and account_info["username"]
             ):
-                messenger_accounts.append(account_key)
+                # Exclude 'yaroslav' account
+                if "yaroslav" not in account_info["username"].lower():
+                    messenger_accounts.append(account_key)
 
         if not messenger_accounts:
             print("❌ No messenger accounts configured!")

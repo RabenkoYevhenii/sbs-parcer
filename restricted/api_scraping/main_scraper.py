@@ -278,7 +278,9 @@ class SBCAttendeesScraper:
         messenger_accounts = []
         for account_key, account_info in self.accounts.items():
             if account_info["role"] == "messaging" and account_info.get("username"):
-                messenger_accounts.append(account_key)
+                # Exclude 'yaroslav' account
+                if "yaroslav" not in account_info["username"].lower():
+                    messenger_accounts.append(account_key)
 
         if not messenger_accounts:
             print("❌ No messenger accounts configured!")
