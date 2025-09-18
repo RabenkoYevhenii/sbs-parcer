@@ -267,8 +267,7 @@ class DataProcessor:
                             )
                             company_name = (
                                 fields[company_name_idx].strip().strip('"')
-                                if company_name_idx > -1
-                                and len(fields) > company_name_idx
+                                if -1 < company_name_idx < len(fields)
                                 else ""
                             )
 

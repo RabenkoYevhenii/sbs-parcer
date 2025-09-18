@@ -263,11 +263,17 @@ class SBCAttendeesScraper:
                 return True, excluded_company["original"], 1.0
 
             # Check if one contains the other only if the length difference is small
-            if abs(
-                len(normalized_input) - len(excluded_company["normalized"])
-            ) <= 3 and (
-                normalized_input in excluded_company["normalized"]
-                or excluded_company["normalized"] in normalized_input
+            if (
+                abs(
+                    len(normalized_input) - len(excluded_company["normalized"])
+                )
+                <= 3
+                and len(normalized_input) > 0
+                and len(excluded_company["normalized"]) > 0
+                and (
+                    normalized_input in excluded_company["normalized"]
+                    or excluded_company["normalized"] in normalized_input
+                )
             ):
 
                 # Calculate similarity for containment
@@ -435,11 +441,11 @@ class SBCAttendeesScraper:
 
         # Логінимося зі scraper акаунтом за замовчуванням
         return self.login("scraper")
-    
+
     def accept_cookies(self):
         """Accept cookies if cookie banner is present"""
         print("🍪 Checking for cookie consent banner...")
-        
+
         try:
             # Common cookie banner selectors
             cookie_selectors = [
@@ -452,24 +458,22 @@ class SBCAttendeesScraper:
                 'button:has-text("Agree")',
                 'button:has-text("Got it")',
                 'button:has-text("Continue")',
-                
                 # Common class/id patterns
                 '[id*="accept"]',
                 '[class*="accept"]',
                 '[id*="cookie"]',
                 '[class*="cookie"]',
-                '.cookie-accept',
-                '.accept-cookies',
-                '#cookie-accept',
-                '#accept-cookies',
-                
+                ".cookie-accept",
+                ".accept-cookies",
+                "#cookie-accept",
+                "#accept-cookies",
                 # More specific patterns
                 'button[data-testid*="accept"]',
                 'button[aria-label*="accept"]',
-                '.btn-accept',
-                '.button-accept'
+                ".btn-accept",
+                ".button-accept",
             ]
-            
+
             # Try each selector
             for selector in cookie_selectors:
                 try:
@@ -477,15 +481,17 @@ class SBCAttendeesScraper:
                     if element and element.is_visible():
                         print(f"✅ Found cookie accept button: {selector}")
                         element.click()
-                        self.page.wait_for_timeout(2000)  # Wait for banner to disappear
+                        self.page.wait_for_timeout(
+                            2000
+                        )  # Wait for banner to disappear
                         print("✅ Clicked cookie accept button")
                         return True
                 except:
                     continue
-            
+
             print("⚠️ No cookie banner found or already accepted")
             return True
-            
+
         except Exception as e:
             print(f"⚠️ Error handling cookies: {e}")
             return True  # Continue anyway
@@ -4489,9 +4495,16 @@ class SBCAttendeesScraper:
         user_limit: int = None,
         enable_position_filter: bool = True,
     ):
-        """Відправляє повідомлення з CSV файлу розподіляючи дані між трьома messenger акаунтами"""
+        """Відправляє повідомлення з CSV файлу розподіляючи дані між доступними messenger акаунтами"""
+        # Отримуємо список доступних messenger акаунтів (тільки messenger1 та messenger3)
+        messenger_accounts = ["messenger1", "messenger3"]
+
+        if not messenger_accounts:
+            print("❌ Немає доступних messenger акаунтів")
+            return 0, 0
+
         print(
-            f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З ТРЬОХ MESSENGER АКАУНТІВ: {csv_file}"
+            f"\n📬 РОЗСИЛКА ПОВІДОМЛЕНЬ З {len(messenger_accounts)} MESSENGER АКАУНТІВ: {csv_file}"
         )
 
         # Витягуємо дані користувачів з CSV
@@ -4520,65 +4533,47 @@ class SBCAttendeesScraper:
                     f"🔢 Застосовано ліміт: оброблятимемо {user_limit} з {original_count} доступних користувачів"
                 )
 
-        # Розділяємо дані між трьома messenger акаунтами
+        # Розділяємо дані між доступними messenger акаунтами
         total_users = len(user_data)
-        third_point = total_users // 3
-        two_thirds_point = (total_users * 2) // 3
+        num_accounts = len(messenger_accounts)
 
-        messenger1_data = user_data[:third_point]
-        messenger2_data = user_data[third_point:two_thirds_point]
-        messenger3_data = user_data[two_thirds_point:]
+        # Створюємо батчі для кожного акаунта
+        batches = []
+        batch_size = total_users // num_accounts
+        remainder = total_users % num_accounts
+
+        start_idx = 0
+        for i in range(num_accounts):
+            # Останній акаунт отримує залишок
+            current_batch_size = batch_size + (1 if i < remainder else 0)
+            end_idx = start_idx + current_batch_size
+            batches.append(user_data[start_idx:end_idx])
+            start_idx = end_idx
 
         print(f"📊 Розподіл контактів:")
-        print(
-            f"   👤 Messenger1 ({self.accounts['messenger1']['name']}): {len(messenger1_data)} контактів"
-        )
-        print(
-            f"   👤 Messenger2 ({self.accounts['messenger2']['name']}): {len(messenger2_data)} контактів"
-        )
-        print(
-            f"   👤 Messenger3 ({self.accounts['messenger3']['name']}): {len(messenger3_data)} контактів"
-        )
+        for i, account_key in enumerate(messenger_accounts):
+            print(
+                f"   👤 {account_key} ({self.accounts[account_key]['name']}): {len(batches[i])} контактів"
+            )
 
         total_success = 0
         total_failed = 0
 
-        # Обробляємо першим messenger акаунтом
-        if messenger1_data:
-            print(f"\n🔄 Переключаємося на Messenger1...")
-            self.switch_account("messenger1")
-            success, failed = self._process_user_batch(
-                messenger1_data, delay_seconds, "Messenger1"
-            )
-            total_success += success
-            total_failed += failed
+        # Обробляємо кожен акаунт
+        for i, account_key in enumerate(messenger_accounts):
+            if not batches[i]:
+                continue
 
-        # Обробляємо другим messenger акаунтом
-        if messenger2_data:
-            print(f"\n🔄 Переключаємося на Messenger2...")
-            self.switch_account("messenger2")
+            print(f"\n🔄 Переключаємося на {account_key}...")
+            self.switch_account(account_key)
 
-            # Додаткова затримка після переключення акаунтів
-            print(f"   ⏱️ Чекаємо 5 секунд після переключення акаунта...")
-            time.sleep(5)
+            # Додаткова затримка після переключення акаунтів (крім першого)
+            if i > 0:
+                print(f"   ⏱️ Чекаємо 5 секунд після переключення акаунта...")
+                time.sleep(5)
 
             success, failed = self._process_user_batch(
-                messenger2_data, delay_seconds, "Messenger2"
-            )
-            total_success += success
-            total_failed += failed
-
-        # Обробляємо третім messenger акаунтом
-        if messenger3_data:
-            print(f"\n🔄 Переключаємося на Messenger3...")
-            self.switch_account("messenger3")
-
-            # Додаткова затримка після переключення акаунтів
-            print(f"   ⏱️ Чекаємо 5 секунд після переключення акаунта...")
-            time.sleep(5)
-
-            success, failed = self._process_user_batch(
-                messenger3_data, delay_seconds, "Messenger3"
+                batches[i], delay_seconds, account_key
             )
             total_success += success
             total_failed += failed
