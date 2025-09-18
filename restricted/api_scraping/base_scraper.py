@@ -144,7 +144,6 @@ class BaseScraper:
                     if element and element.is_visible():
                         print(f"✅ Found cookie accept button: {selector}")
                         element.click()
-                        self.page.wait_for_timeout(2000)  # Wait for banner to disappear
                         print("✅ Clicked cookie accept button")
                         return True
                 except:
@@ -167,14 +166,9 @@ class BaseScraper:
         self.current_account = account_key
 
         print("📄 Відкриваємо sbcconnect.com...")
-        self.page.goto("https://sbcconnect.com", wait_until="domcontentloaded")
-        self.page.wait_for_timeout(3000)
-        
+        self.page.goto("https://sbcconnect.com", wait_until="domcontentloaded")        
         # Accept cookies first
         self.accept_cookies()
-        
-        # Wait a bit more after cookie acceptance
-        self.page.wait_for_timeout(2000)
 
         print(f"🔑 Логінимося з {account['name']}...")
         result = self.page.evaluate(

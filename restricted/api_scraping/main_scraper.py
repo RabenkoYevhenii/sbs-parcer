@@ -29,10 +29,10 @@ sys.path.append(
     )
 )
 from extract_contacts import ContactExtractor
-from base_scraper import BaseScraper
-from company_filter import CompanyFilter
-from data_processor import DataProcessor
-from messaging import MessagingHandler
+from .base_scraper import BaseScraper
+from .company_filter import CompanyFilter
+from .data_processor import DataProcessor
+from .messaging import MessagingHandler
 
 
 class SBCAttendeesScraper:
@@ -834,7 +834,7 @@ class SBCAttendeesScraper:
 
                 # Відправляємо повідомлення (з автоматичним follow-up та перевіркою чату)
                 success = self.messaging.send_message_to_user(
-                    user_id, message, full_name, company_name
+                    user_id, message, self.accounts, full_name, company_name
                 )
 
                 if success == "success":

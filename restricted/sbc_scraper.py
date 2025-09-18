@@ -6,7 +6,13 @@ This file replaces the original api_test.py with a cleaner interface
 using the new modular structure.
 """
 
-from api_scraping import SBCAttendeesScraper
+import sys
+import os
+
+# Add the restricted directory to Python path so we can import api_scraping
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from api_scraping.main_scraper import SBCAttendeesScraper
 from config import settings
 
 

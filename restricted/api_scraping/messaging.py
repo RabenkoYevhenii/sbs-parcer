@@ -52,32 +52,50 @@ class MessagingHandler:
 
     def load_chats_list(self, accounts):
         """Loads the list of existing chats"""
+        if not isinstance(accounts, dict):
+            print(f"❌ Помилка: accounts не є dict, а {type(accounts)}")
+            return []
+
+        current_user_id = accounts.get(
+            self.base_scraper.current_account, {}
+        ).get("user_id")
+        if not current_user_id:
+            print(
+                f"❌ Не знайдено user_id для акаунта {self.base_scraper.current_account}"
+            )
+            return []
+
         endpoint = "chat/LoadChatsList?eventPath=sbc-summit-2025"
         print(f"🔍 Завантажуємо список чатів з API...")
         chats_data = self.base_scraper.api_request("GET", endpoint)
 
         if chats_data and isinstance(chats_data, list):
             # Get current user ID
-            current_user_id = accounts[self.base_scraper.current_account][
-                "user_id"
-            ]
+            # current_user_id = accounts[self.base_scraper.current_account][
+            #     "user_id"
+            # ]
 
             # Cache chats for quick access
             for chat in chats_data:
+                if not isinstance(chat, dict):
+                    continue
+
                 chat_id = chat.get("chatId")
                 if not chat_id:
                     continue
 
                 # For single chats (personal chats)
                 if chat.get("isSingleChat") and chat.get("singleChatDetails"):
-                    user_info = chat["singleChatDetails"].get("user", {})
-                    other_participant_id = user_info.get("id")
+                    single_chat_details = chat.get("singleChatDetails")
+                    if isinstance(single_chat_details, dict):
+                        user_info = single_chat_details.get("user", {})
+                        other_participant_id = user_info.get("id")
 
-                    if (
-                        other_participant_id
-                        and other_participant_id != current_user_id
-                    ):
-                        self.existing_chats[other_participant_id] = chat_id
+                        if (
+                            other_participant_id
+                            and other_participant_id != current_user_id
+                        ):
+                            self.existing_chats[other_participant_id] = chat_id
 
             print(f"📋 Закешовано {len(self.existing_chats)} існуючих чатів")
             return chats_data
@@ -112,11 +130,17 @@ class MessagingHandler:
 
     def create_chat(self, target_user_id: str, accounts) -> Optional[str]:
         """Creates new chat with user"""
-        current_user_id = accounts[self.base_scraper.current_account][
-            "user_id"
-        ]
+        if not isinstance(accounts, dict):
+            print(f"❌ Помилка: accounts не є dict, а {type(accounts)}")
+            return None
 
+        current_user_id = accounts.get(
+            self.base_scraper.current_account, {}
+        ).get("user_id")
         if not current_user_id:
+            print(
+                f"❌ Не знайдено user_id для акаунта {self.base_scraper.current_account}"
+            )
             return None
 
         chat_id = str(uuid.uuid4())
