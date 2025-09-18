@@ -28,8 +28,9 @@ from extract_contacts import ContactExtractor
 
 
 class SBCAttendeesScraper:
-    def __init__(self, headless=True):
+    def __init__(self, headless=True, proxy_config: Dict[str, str] = None):
         self.headless = headless
+        self.proxy_config = proxy_config
         self.playwright = None
         self.browser = None
         self.context = None
@@ -262,12 +263,11 @@ class SBCAttendeesScraper:
                 return True, excluded_company["original"], 1.0
 
             # Check if one contains the other only if the length difference is small
-            if (
-                abs(len(normalized_input) - len(excluded_company["normalized"])) <= 3
-                and (
-                    normalized_input in excluded_company["normalized"]
-                    or excluded_company["normalized"] in normalized_input
-                )
+            if abs(
+                len(normalized_input) - len(excluded_company["normalized"])
+            ) <= 3 and (
+                normalized_input in excluded_company["normalized"]
+                or excluded_company["normalized"] in normalized_input
             ):
 
                 # Calculate similarity for containment
@@ -393,17 +393,102 @@ class SBCAttendeesScraper:
             )
 
     def start(self):
-        """Запускає браузер і логіниться"""
+        """Starts the browser and logs in"""
         print("🚀 Запускаємо браузер...")
         self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(headless=self.headless)
-        self.context = self.browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+
+        self.proxy_config = settings.get_proxy_config()
+
+        # Use Firefox instead of Chromium
+        self.browser = self.playwright.firefox.launch(
+            headless=self.headless,
+            firefox_user_prefs={
+                # Firefox preferences to avoid detection
+                "dom.webdriver.enabled": False,
+                "useAutomationExtension": False,
+                "general.platform.override": "MacIntel",
+                "general.useragent.override": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0",
+            },
         )
+
+        # Create context with Firefox-appropriate settings and proxy if provided
+        context_options = {
+            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0",
+            "viewport": {"width": 1920, "height": 1080},
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
+        }
+
+        # Add proxy configuration if provided
+        if self.proxy_config:
+            print(f"🌐 Використовуємо proxy: {self.proxy_config['server']}")
+            context_options["proxy"] = {
+                "server": self.proxy_config["server"],
+                "username": self.proxy_config["username"],
+                "password": self.proxy_config["password"],
+            }
+        else:
+            print("📡 Працюємо без proxy")
+
+        self.context = self.browser.new_context(**context_options)
         self.page = self.context.new_page()
 
         # Логінимося зі scraper акаунтом за замовчуванням
         return self.login("scraper")
+    
+    def accept_cookies(self):
+        """Accept cookies if cookie banner is present"""
+        print("🍪 Checking for cookie consent banner...")
+        
+        try:
+            # Common cookie banner selectors
+            cookie_selectors = [
+                # Generic accept buttons
+                'button:has-text("Accept")',
+                'button:has-text("Accept All")',
+                'button:has-text("Accept all")',
+                'button:has-text("I Accept")',
+                'button:has-text("OK")',
+                'button:has-text("Agree")',
+                'button:has-text("Got it")',
+                'button:has-text("Continue")',
+                
+                # Common class/id patterns
+                '[id*="accept"]',
+                '[class*="accept"]',
+                '[id*="cookie"]',
+                '[class*="cookie"]',
+                '.cookie-accept',
+                '.accept-cookies',
+                '#cookie-accept',
+                '#accept-cookies',
+                
+                # More specific patterns
+                'button[data-testid*="accept"]',
+                'button[aria-label*="accept"]',
+                '.btn-accept',
+                '.button-accept'
+            ]
+            
+            # Try each selector
+            for selector in cookie_selectors:
+                try:
+                    element = self.page.query_selector(selector)
+                    if element and element.is_visible():
+                        print(f"✅ Found cookie accept button: {selector}")
+                        element.click()
+                        self.page.wait_for_timeout(2000)  # Wait for banner to disappear
+                        print("✅ Clicked cookie accept button")
+                        return True
+                except:
+                    continue
+            
+            print("⚠️ No cookie banner found or already accepted")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Error handling cookies: {e}")
+            return True  # Continue anyway
 
     def login(self, account_key="scraper"):
         """Виконує логін з вказаним акаунтом"""
@@ -417,6 +502,9 @@ class SBCAttendeesScraper:
         print("📄 Відкриваємо sbcconnect.com...")
         self.page.goto("https://sbcconnect.com", wait_until="domcontentloaded")
         self.page.wait_for_timeout(5000)
+
+        # Accept cookies first
+        self.accept_cookies()
 
         print(f"🔑 Логінимося з {account['name']}...")
         result = self.page.evaluate(
