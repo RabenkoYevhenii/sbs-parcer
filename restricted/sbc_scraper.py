@@ -7,6 +7,7 @@ using the new modular structure.
 """
 
 from api_scraping import SBCAttendeesScraper
+from config import settings
 
 
 def main():
@@ -14,7 +15,8 @@ def main():
     print("🚀 Starting SBC Attendees Scraper (Refactored Version)")
     print("=" * 60)
 
-    scraper = SBCAttendeesScraper(headless=False)
+    proxy_config = settings.get_proxy_config()
+    scraper = SBCAttendeesScraper(headless=False, proxy_config=proxy_config)
 
     try:
         # Start browser and login

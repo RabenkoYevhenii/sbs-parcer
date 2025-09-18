@@ -31,9 +31,9 @@ from .messaging import MessagingHandler
 class SBCAttendeesScraper:
     """Main class that orchestrates the SBC attendees scraping and messaging system"""
 
-    def __init__(self, headless=True):
+    def __init__(self, headless=True, proxy_config: Dict[str, str] = None):
         # Initialize core components
-        self.base_scraper = BaseScraper(headless)
+        self.base_scraper = BaseScraper(headless, proxy_config)
         self.company_filter = CompanyFilter(self.base_scraper.get_data_dir())
         self.data_processor = DataProcessor(self.base_scraper.get_data_dir())
         self.messaging = MessagingHandler(
